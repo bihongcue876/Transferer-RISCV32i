@@ -5,3 +5,4 @@ ui/__pycache__/
 core/__pycache__/
 .venv/
 releases/
+debug.log
