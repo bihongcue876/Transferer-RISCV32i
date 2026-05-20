@@ -28,7 +28,7 @@ class MainWindow(tk.Tk):
     def __init__(self, cached_data: dict):
         super().__init__()
         self.title("RISC-V 机器码学习助手")
-        self.geometry("1100x700")
+        self.geometry("1350x800")
         self.minsize(800, 500)
 
         # 设置应用图标
@@ -79,7 +79,7 @@ class MainWindow(tk.Tk):
                 text=label,
                 bg="#ffffff",
                 fg="#333333",
-                font=("Microsoft YaHei UI", 11),
+                font=("Microsoft YaHei UI", 12),
                 padx=25,
                 pady=10,
                 cursor="hand2",
@@ -95,7 +95,7 @@ class MainWindow(tk.Tk):
             text="退出",
             bg="#ffffff",
             fg="#333333",
-            font=("Microsoft YaHei UI", 11),
+            font=("Microsoft YaHei UI", 12),
             padx=25,
             pady=10,
             cursor="hand2",

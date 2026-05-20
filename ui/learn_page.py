@@ -1,57 +1,31 @@
-"""RISC-V 32I 学习页面 — 完整实现"""
+"""RISC-V 32I 学习页面 — 分块渲染 + 测试块始终可见 + 无 PIL"""
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 from core.assembler import assemble_line, disassemble_bytes
 
-# ── PIL 可选导入（用于 PNG 图片加载） ─────────────────────
-_HAS_PIL = False
-Image = None
-ImageTk = None
-try:
-    from PIL import Image as _PIL_Image, ImageTk as _PIL_ImageTk
-    Image = _PIL_Image
-    ImageTk = _PIL_ImageTk
-    _HAS_PIL = True
-except ImportError:
-    pass
-
 # ── 资源路径 ─────────────────────────────────────────────────
 _RESOURCE_DIR = Path(__file__).resolve().parent.parent / "resource"
-
-# 图片文件名映射 (设计稿名称 -> 实际文件名)
 _IMAGE_MAP = {
-    "allcodes.png":     "picofalltype.png",
-    "typesdivision.png": "useandalgorithm.png",
-    "picoftype.png":    "picofsixtypes.png",
+    "allcodes.png":      "picofalltype.gif",
+    "typesdivision.png": "useandalgorithm.gif",
+    "picoftype.png":     "picofsixtypes.gif",
 }
 
 
-def _load_image(name: str, max_width: int = 700):
-    """加载 resource 目录下的 PNG 图片，等比缩放至 max_width 以内。
-    需要 Pillow 支持；若无则返回 None。"""
-    if not _HAS_PIL:
-        return None
+def _load_gif(name: str):
+    """加载 resource 目录下的 GIF（Tkinter 原生支持）"""
     real_name = _IMAGE_MAP.get(name, name)
     path = _RESOURCE_DIR / real_name
     if not path.exists():
         return None
-    img = Image.open(path)
-    w, h = img.size
-    if w > max_width:
-        ratio = max_width / w
-        new_w = max_width
-        new_h = int(h * ratio)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-    return ImageTk.PhotoImage(img)
+    return tk.PhotoImage(file=str(path))
 
 
-# ── 指令数据（从 LEARNINGDOC.MD 整理） ────────────────────
-# 每条指令：name, desc_short, fmt, fmt_type, example,
-#            machine_table（列表[行]）, explanation, imm_desc（可选）
-
+# ══════════════════════════════════════════════════════════════
+#  指令数据
+# ══════════════════════════════════════════════════════════════
 _INSTRUCTION_LIST = [
-    # ── R-type ──
     {"name":"ADD","desc_short":"寄存器加法","fmt":"R","fmt_type":"R 型","example":"add x5, x6, x7",
      "machine_table":["funct7=0000000 | rs2 | rs1 | funct3=000 | rd | opcode=0110011"],
      "explanation":"opcode=0110011, funct3=000, funct7=0000000 指示加法运算。"},
@@ -82,10 +56,9 @@ _INSTRUCTION_LIST = [
     {"name":"SLTU","desc_short":"无符号小于置位","fmt":"R","fmt_type":"R 型","example":"sltu x8, x9, x10",
      "machine_table":["funct7=0000000 | rs2 | rs1 | funct3=011 | rd | opcode=0110011"],
      "explanation":"无符号比较。"},
-    # ── I-type ──
     {"name":"ADDI","desc_short":"立即数加法","fmt":"I","fmt_type":"I 型","example":"addi x5, x6, 100",
      "machine_table":["imm[11:0] | rs1 | funct3=000 | rd | opcode=0010011"],
-     "explanation":"opcode=0010011, 12位有符号立即数符号扩展后与 rs1 相加。"},
+     "explanation":"opcode=0010011, 12位立即数符号扩展后与 rs1 相加。"},
     {"name":"XORI","desc_short":"立即数异或","fmt":"I","fmt_type":"I 型","example":"xori x7, x8, -1",
      "machine_table":["imm[11:0] | rs1 | funct3=100 | rd | opcode=0010011"],
      "explanation":"立即数按位异或。"},
@@ -112,7 +85,7 @@ _INSTRUCTION_LIST = [
      "explanation":"无符号比较。"},
     {"name":"LB","desc_short":"字节加载(有符号扩展)","fmt":"I","fmt_type":"I 型(Load)","example":"lb x5, 0(x6)",
      "machine_table":["imm[11:0] | rs1 | funct3=000 | rd | opcode=0000011"],
-     "explanation":"从地址 rs1+imm 读1字节，有符号扩展为32位。"},
+     "explanation":"从地址 rs1+imm 读1字节，有符号扩展。"},
     {"name":"LH","desc_short":"半字加载(有符号扩展)","fmt":"I","fmt_type":"I 型(Load)","example":"lh x7, 2(x8)",
      "machine_table":["imm[11:0] | rs1 | funct3=001 | rd | opcode=0000011"],
      "explanation":"读16位半字，有符号扩展。"},
@@ -128,7 +101,6 @@ _INSTRUCTION_LIST = [
     {"name":"JALR","desc_short":"寄存器跳转并链接","fmt":"I","fmt_type":"I 型(JALR)","example":"jalr x1, 0(x5)",
      "machine_table":["imm[11:0] | rs1 | funct3=000 | rd | opcode=1100111"],
      "explanation":"pc+4 存 rd，跳转到 rs1+imm 且最低位清零。"},
-    # ── S-type ──
     {"name":"SB","desc_short":"存储字节","fmt":"S","fmt_type":"S 型","example":"sb x5, 0(x6)",
      "machine_table":["imm[11:5] | rs2 | rs1 | funct3=000 | imm[4:0] | opcode=0100011"],
      "explanation":"将 rs2 低8位存入地址 rs1+imm。"},
@@ -138,7 +110,6 @@ _INSTRUCTION_LIST = [
     {"name":"SW","desc_short":"存储字","fmt":"S","fmt_type":"S 型","example":"sw x9, 4(x2)",
      "machine_table":["imm[11:5] | rs2 | rs1 | funct3=010 | imm[4:0] | opcode=0100011"],
      "explanation":"存储32位字。"},
-    # ── B-type ──
     {"name":"BEQ","desc_short":"相等分支","fmt":"B","fmt_type":"B 型","example":"beq x5, x6, 8",
      "machine_table":["imm[12|10:5] | rs2 | rs1 | funct3=000 | imm[4:1|11] | opcode=1100011"],
      "explanation":"若 rs1==rs2, PC+=imm(字节)。"},
@@ -157,14 +128,12 @@ _INSTRUCTION_LIST = [
     {"name":"BGEU","desc_short":"无符号大于等于分支","fmt":"B","fmt_type":"B 型","example":"bgeu x15, x16, 8",
      "machine_table":["imm[12|10:5] | rs2 | rs1 | funct3=111 | imm[4:1|11] | opcode=1100011"],
      "explanation":"无符号比较。"},
-    # ── U-type ──
     {"name":"LUI","desc_short":"高位立即数加载","fmt":"U","fmt_type":"U 型","example":"lui x10, 0x12345",
      "machine_table":["imm[31:12] | rd | opcode=0110111"],
      "explanation":"20位立即数左移12位(低12位填0)写入 rd。"},
     {"name":"AUIPC","desc_short":"PC 加立即数","fmt":"U","fmt_type":"U 型","example":"auipc x5, 0x1",
      "machine_table":["imm[31:12] | rd | opcode=0010111"],
      "explanation":"PC + imm<<12 写入 rd。"},
-    # ── J-type ──
     {"name":"JAL","desc_short":"跳转并链接","fmt":"J","fmt_type":"J 型","example":"jal x1, 0",
      "machine_table":["imm[20|10:1|11|19:12] | rd | opcode=1101111"],
      "explanation":"pc+4 存入 rd, 跳转到 PC+offset(±1MiB)。"},
@@ -230,8 +199,7 @@ _PSEUDO_INSTRUCTION_LIST = [
      "explanation":"rd = ~rs。"},
 ]
 
-
-# ── 寄存器表数据 ────────────────────────────────────────────
+# ── 寄存器表 ─────────────────────────────────────────────────
 _REGISTER_TABLE = [
     ("x0","00000","zero","硬连线常数 0",""),
     ("x1","00001","ra","返回地址","caller"),
@@ -267,537 +235,393 @@ _REGISTER_TABLE = [
     ("x31","11111","t6","临时寄存器","caller"),
 ]
 
-# ── 六类编码格式总览表数据 ──────────────────────────────
+# ── 格式总览表 ──────────────────────────────────────────────
 _FORMAT_TABLES = {
-    "R": [
-        ("ADD","0000000","rs2","rs1","000","rd","0110011","加法"),
-        ("SUB","0100000","rs2","rs1","000","rd","0110011","减法"),
-        ("XOR","0000000","rs2","rs1","100","rd","0110011","异或"),
-        ("OR","0000000","rs2","rs1","110","rd","0110011","或"),
-        ("AND","0000000","rs2","rs1","111","rd","0110011","与"),
-        ("SLL","0000000","rs2","rs1","001","rd","0110011","逻辑左移"),
-        ("SRL","0000000","rs2","rs1","101","rd","0110011","逻辑右移"),
-        ("SRA","0100000","rs2","rs1","101","rd","0110011","算术右移"),
-        ("SLT","0000000","rs2","rs1","010","rd","0110011","有符号小于置位"),
-        ("SLTU","0000000","rs2","rs1","011","rd","0110011","无符号小于置位"),
-    ],
-    "I": [
-        ("ADDI","imm[11:0]","rs1","000","rd","0010011","立即数加法"),
-        ("XORI","imm[11:0]","rs1","100","rd","0010011","立即数异或"),
-        ("ORI","imm[11:0]","rs1","110","rd","0010011","立即数或"),
-        ("ANDI","imm[11:0]","rs1","111","rd","0010011","立即数与"),
-        ("SLLI","0000000 shamt","rs1","001","rd","0010011","逻辑左移立即数"),
-        ("SRLI","0000000 shamt","rs1","101","rd","0010011","逻辑右移立即数"),
-        ("SRAI","0100000 shamt","rs1","101","rd","0010011","算术右移立即数"),
-        ("SLTI","imm[11:0]","rs1","010","rd","0010011","有符号小于立即数"),
-        ("SLTIU","imm[11:0]","rs1","011","rd","0010011","无符号小于立即数"),
-        ("LW","imm[11:0]","rs1","010","rd","0000011","字加载"),
-    ],
-    "S": [
-        ("SB","imm[11:5]","rs2","rs1","000","imm[4:0]","0100011","存储字节"),
-        ("SH","imm[11:5]","rs2","rs1","001","imm[4:0]","0100011","存储半字"),
-        ("SW","imm[11:5]","rs2","rs1","010","imm[4:0]","0100011","存储字"),
-    ],
-    "B": [
-        ("BEQ","imm[12|10:5]","rs2","rs1","000","imm[4:1|11]","1100011","相等跳转"),
-        ("BNE","imm[12|10:5]","rs2","rs1","001","imm[4:1|11]","1100011","不等跳转"),
-        ("BLT","imm[12|10:5]","rs2","rs1","100","imm[4:1|11]","1100011","有符号小于跳转"),
-        ("BGE","imm[12|10:5]","rs2","rs1","101","imm[4:1|11]","1100011","有符号≥跳转"),
-        ("BLTU","imm[12|10:5]","rs2","rs1","110","imm[4:1|11]","1100011","无符号小于跳转"),
-        ("BGEU","imm[12|10:5]","rs2","rs1","111","imm[4:1|11]","1100011","无符号≥跳转"),
-    ],
-    "U": [
-        ("LUI","imm[31:12]","rd","0110111","高位立即数加载"),
-        ("AUIPC","imm[31:12]","rd","0010111","PC加立即数"),
-    ],
-    "J": [
-        ("JAL","imm[20|10:1|11|19:12]","rd","1101111","跳转并链接"),
-    ],
+    "R": [("ADD","0000000","rs2","rs1","000","rd","0110011","加法"),("SUB","0100000","rs2","rs1","000","rd","0110011","减法"),
+          ("XOR","0000000","rs2","rs1","100","rd","0110011","异或"),("OR","0000000","rs2","rs1","110","rd","0110011","或"),
+          ("AND","0000000","rs2","rs1","111","rd","0110011","与"),("SLL","0000000","rs2","rs1","001","rd","0110011","逻辑左移"),
+          ("SRL","0000000","rs2","rs1","101","rd","0110011","逻辑右移"),("SRA","0100000","rs2","rs1","101","rd","0110011","算术右移"),
+          ("SLT","0000000","rs2","rs1","010","rd","0110011","有符号小于置位"),("SLTU","0000000","rs2","rs1","011","rd","0110011","无符号小于置位")],
+    "I": [("ADDI","imm[11:0]","rs1","000","rd","0010011","立即数加法"),("XORI","imm[11:0]","rs1","100","rd","0010011","立即数异或"),
+          ("ORI","imm[11:0]","rs1","110","rd","0010011","立即数或"),("ANDI","imm[11:0]","rs1","111","rd","0010011","立即数与"),
+          ("SLLI","0000000 shamt","rs1","001","rd","0010011","逻辑左移立即数"),("SRLI","0000000 shamt","rs1","101","rd","0010011","逻辑右移立即数"),
+          ("SRAI","0100000 shamt","rs1","101","rd","0010011","算术右移立即数"),("SLTI","imm[11:0]","rs1","010","rd","0010011","有符号小于立即数"),
+          ("SLTIU","imm[11:0]","rs1","011","rd","0010011","无符号小于立即数"),("LW","imm[11:0]","rs1","010","rd","0000011","字加载")],
+    "S": [("SB","imm[11:5]","rs2","rs1","000","imm[4:0]","0100011","存储字节"),("SH","imm[11:5]","rs2","rs1","001","imm[4:0]","0100011","存储半字"),
+          ("SW","imm[11:5]","rs2","rs1","010","imm[4:0]","0100011","存储字")],
+    "B": [("BEQ","imm[12|10:5]","rs2","rs1","000","imm[4:1|11]","1100011","相等跳转"),("BNE","imm[12|10:5]","rs2","rs1","001","imm[4:1|11]","1100011","不等跳转"),
+          ("BLT","imm[12|10:5]","rs2","rs1","100","imm[4:1|11]","1100011","有符号小于跳转"),("BGE","imm[12|10:5]","rs2","rs1","101","imm[4:1|11]","1100011","有符号≥跳转"),
+          ("BLTU","imm[12|10:5]","rs2","rs1","110","imm[4:1|11]","1100011","无符号小于跳转"),("BGEU","imm[12|10:5]","rs2","rs1","111","imm[4:1|11]","1100011","无符号≥跳转")],
+    "U": [("LUI","imm[31:12]","rd","0110111","高位立即数加载"),("AUIPC","imm[31:12]","rd","0010111","PC加立即数")],
+    "J": [("JAL","imm[20|10:1|11|19:12]","rd","1101111","跳转并链接")],
 }
 
-# ── 具体指令到格式的映射，用于导航树分组 ──────────────────
-_INST_FORMAT_MAP = {}
-for inst in _INSTRUCTION_LIST:
-    _INST_FORMAT_MAP[inst["name"]] = inst["fmt"]
+# ── 标签→区块映射 ──────────────────────────────────────────
+_TAG_TO_SECTION = {"intro-intro":"intro","intro-regs":"intro","intro-overview":"intro"}
+for _i in _INSTRUCTION_LIST:       _TAG_TO_SECTION[f"inst-{_i['name'].lower()}"] = _i["fmt"]
+for _i in _CSR_INSTRUCTION_LIST:   _TAG_TO_SECTION[f"inst-{_i['name'].lower()}"] = "csr"
+for _i in _PSEUDO_INSTRUCTION_LIST:_TAG_TO_SECTION[f"inst-{_i['name'].lower()}"] = "pseudo"
 
 
 class LearnPage(ttk.Frame):
-    """RISC-V 学习页面：左侧导航树 + 右侧滚动文档"""
+    """RISC-V 学习页面：左侧导航树 + 右侧分块渲染（区块缓存）"""
 
     def __init__(self, parent, main_window):
         super().__init__(parent)
         self.main_window = main_window
         self._last_selected = "intro-intro"
         self._content_widgets: dict[str, tk.Widget] = {}
-        self._images: list[ImageTk.PhotoImage] = []
-        self._tree_map: dict[str, str] = {}  # tag -> tree item
+        self._images: list[tk.PhotoImage] = []
+        self._sections: dict[str, ttk.Frame] = {}        # 区块缓存
+        self._section_widgets: dict[str, dict] = {}       # 每区块的跳转引用
+        self._current_section_key: str | None = None
         self.setup_ui()
 
-    # ── UI 搭建 ──────────────────────────────────────────────
     def setup_ui(self):
         self.columnconfigure(0, weight=0)
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
-        # ── 左侧导航 ──
+        # 全局样式：表格字体
+        style = ttk.Style()
+        style.configure("Treeview", font=("", 13), rowheight=30)
+        style.configure("Treeview.Heading", font=("", 13, "bold"))
+
+        # 左侧导航
         left = ttk.Frame(self, width=220)
         left.grid(row=0, column=0, sticky="ns", padx=(5, 0), pady=5)
         left.grid_propagate(False)
-
-        ttk.Label(left, text="指令导航", font=("", 12, "bold")).pack(
-            anchor="w", padx=5, pady=(5, 5))
-
+        ttk.Label(left, text="指令导航", font=("", 14, "bold")).pack(anchor="w", padx=5, pady=(5,5))
         self.tree = ttk.Treeview(left, show="tree", selectmode="browse")
-        self.tree.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+        self.tree.pack(fill="both", expand=True, padx=5, pady=(0,5))
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-
         self._build_nav_tree()
 
-        # ── 右侧内容 ──
+        # 右侧 Canvas + 滚动
         right = ttk.Frame(self)
         right.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
-
         self.canvas = tk.Canvas(right, highlightthickness=0)
         scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.canvas.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.configure(yscrollcommand=scrollbar.set)
-
         self.content_frame = ttk.Frame(self.canvas)
-        self.content_window = self.canvas.create_window(
-            (0, 0), window=self.content_frame, anchor="nw", width=10)
-
+        self.content_window = self.canvas.create_window((0,0), window=self.content_frame, anchor="nw", width=10)
         self.content_frame.bind("<Configure>", self._on_content_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
-        # ── 鼠标滚轮滚动（全局绑定，确保子控件也能响应） ──
-        self.canvas.bind("<Enter>", self._enable_scroll)
-        self.content_frame.bind("<Enter>", self._enable_scroll)
-        self.canvas.bind("<Leave>", self._disable_scroll)
+        # 鼠标滚轮：Canvas 聚焦 + 递归绑定内容区所有子控件
+        self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
+        self._bind_mousewheel_recursive(self.content_frame)
 
-        # 此外对 Treeview 左侧导航直接绑定，避免与右侧冲突
-        self.tree.bind("<Enter>", self._disable_scroll)
+        # 初始显示总述
+        self.after(50, lambda: self._show_section("intro", "intro-intro"))
 
-        self._build_content()
-
-    # ── 滚动事件 ────────────────────────────────────────────
     def _on_content_configure(self, event):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_canvas_configure(self, event):
         self.canvas.itemconfig(self.content_window, width=event.width - 20)
 
-    def _enable_scroll(self, event=None):
-        """鼠标进入内容区域：全局绑定滚轮 + 设焦点"""
-        self.canvas.focus_set()
-        self.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
-        self.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
-
-    def _disable_scroll(self, event=None):
-        """鼠标离开内容区域：解除全局绑定，不影响左侧 Treeview"""
-        self.unbind_all("<MouseWheel>")
-        self.unbind_all("<Button-4>")
-        self.unbind_all("<Button-5>")
-
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    # ══════════════════════════════════════════════════════════
-    #  导航树
-    # ══════════════════════════════════════════════════════════
+    # ── 递归滚轮绑定 ───────────────────────────────────────
+    def _bind_mousewheel_recursive(self, widget):
+        """递归遍历 widget 子树，为每个非滚轮控件绑定 MouseWheel"""
+        if isinstance(widget, (tk.Canvas, tk.Text)):
+            return
+        try:
+            # 跳过已有自身滚轮的 ttk::treeview
+            if widget.winfo_class() == "Treeview":
+                return
+        except tk.TclError:
+            pass
+        # 跳过 ttk::scrollbar
+        try:
+            if widget.winfo_class() in ("Scrollbar", "Radiobutton", "Checkbutton", "Button"):
+                return
+        except tk.TclError:
+            pass
+        widget.bind("<MouseWheel>", self._on_mousewheel)
+        widget.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        widget.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+        try:
+            for child in widget.winfo_children():
+                self._bind_mousewheel_recursive(child)
+        except tk.TclError:
+            pass
+
+    # ── 导航树 ────────────────────────────────────────────────
     def _build_nav_tree(self):
-        # 总述
         intro = self.tree.insert("", "end", text="总述", open=True)
-        self._add_nav_node(intro, "RISC-V 介绍", "intro-intro")
-        self._add_nav_node(intro, "寄存器一览表", "intro-regs")
-        self._add_nav_node(intro, "汇编与机器码总览表", "intro-overview")
-
-        # 基本语句
+        self.tree.insert(intro, "end", text="RISC-V 介绍", tags=("intro-intro",))
+        self.tree.insert(intro, "end", text="寄存器一览表", tags=("intro-regs",))
+        self.tree.insert(intro, "end", text="汇编与机器码总览表", tags=("intro-overview",))
         detail = self.tree.insert("", "end", text="基本语句说明", open=True)
-        fmt_groups = [
-            ("R","R-type 指令"), ("I","I-type 指令"),
-            ("S","S-type 指令"), ("B","B-type 指令"),
-            ("U","U-type 指令"), ("J","J-type 指令"),
-        ]
-        for fmt_key, fmt_name in fmt_groups:
-            fmt_node = self.tree.insert(detail, "end", text=fmt_name, open=True)
+        for fk, fn in [("R","R-type 指令"),("I","I-type 指令"),("S","S-type 指令"),("B","B-type 指令"),("U","U-type 指令"),("J","J-type 指令")]:
+            node = self.tree.insert(detail, "end", text=fn, open=True)
             for inst in _INSTRUCTION_LIST:
-                if inst["fmt"] == fmt_key:
-                    self._add_nav_node(
-                        fmt_node,
-                        f"{inst['name']} – {inst['desc_short']}",
-                        f"inst-{inst['name'].lower()}")
-
-        # 特权指令
+                if inst["fmt"] == fk:
+                    self.tree.insert(node, "end", text=f"{inst['name']} – {inst['desc_short']}", tags=(f"inst-{inst['name'].lower()}",))
         priv = self.tree.insert("", "end", text="特权指令 (Zicsr)", open=True)
         for inst in _CSR_INSTRUCTION_LIST:
-            self._add_nav_node(
-                priv,
-                f"{inst['name']} – {inst['desc_short']}",
-                f"inst-{inst['name'].lower()}")
-
-        # 伪指令
+            self.tree.insert(priv, "end", text=f"{inst['name']} – {inst['desc_short']}", tags=(f"inst-{inst['name'].lower()}",))
         pseudo = self.tree.insert("", "end", text="常用伪指令", open=True)
         for inst in _PSEUDO_INSTRUCTION_LIST:
-            self._add_nav_node(
-                pseudo,
-                f"{inst['name']} – {inst['desc_short']}",
-                f"inst-{inst['name'].lower()}")
+            self.tree.insert(pseudo, "end", text=f"{inst['name']} – {inst['desc_short']}", tags=(f"inst-{inst['name'].lower()}",))
 
-    def _add_nav_node(self, parent, text, tag):
-        item = self.tree.insert(parent, "end", text=text, tags=(tag,))
-        self._tree_map[tag] = item
+    # ── 分块渲染（区块缓存 + 隐藏/显示） ─────────────────────
+    def _show_section(self, section_key: str, scroll_tag: str | None = None):
+        # 1. 首次构建，缓存框架
+        if section_key not in self._sections:
+            new_frame = ttk.Frame(self.content_frame)
+            new_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+            new_frame.columnconfigure(0, weight=1)
 
-    # ══════════════════════════════════════════════════════════
-    #  内容构建
-    # ══════════════════════════════════════════════════════════
-    def _build_content(self):
-        self.content_frame.columnconfigure(0, weight=1)
-        sec = ttk.Frame(self.content_frame)
-        sec.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        sec.columnconfigure(0, weight=1)
+            self._content_widgets.clear()
+            if section_key == "intro":
+                self._build_intro_section(new_frame)
+            elif section_key in ("R", "I", "S", "B", "U", "J"):
+                self._build_format_section(new_frame, section_key)
+            elif section_key == "csr":
+                self._build_csr_section(new_frame)
+            elif section_key == "pseudo":
+                self._build_pseudo_section(new_frame)
 
-        # ── 总述 ──
-        self._build_overview(sec)
+            self._sections[section_key] = new_frame
+            self._section_widgets[section_key] = self._content_widgets.copy()
+            # 新区块的所有控件绑定滚轮
+            self._bind_mousewheel_recursive(new_frame)
 
-        # ── 基本语句说明 ──
-        self._h1(sec, "基本语句说明")
-        for inst in _INSTRUCTION_LIST:
-            self._build_inst_card(sec, inst)
+        # 2. 隐藏当前区块，显示目标区块
+        if self._current_section_key and self._current_section_key in self._sections:
+            self._sections[self._current_section_key].grid_remove()
+        self._sections[section_key].grid()
+        self._current_section_key = section_key
+        self._content_widgets = self._section_widgets[section_key]
 
-        # ── 特权指令 ──
-        self._h1(sec, "特权指令（Zicsr 扩展）")
-        for inst in _CSR_INSTRUCTION_LIST:
-            self._build_inst_card(sec, inst)
+        # 3. 滚动至顶部，若指定标签则跳转
+        self.canvas.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.yview_moveto(0)
+        if scroll_tag and scroll_tag in self._content_widgets:
+            self.after(50, lambda: self._scroll_to_tag(scroll_tag))
 
-        # ── 伪指令 ──
-        self._h1(sec, "常用伪指令")
-        for inst in _PSEUDO_INSTRUCTION_LIST:
-            self._build_inst_card(sec, inst)
-
-    # ── 总述部分 ──────────────────────────────────────────
-    def _build_overview(self, parent):
+    # ── 区块构建 ──────────────────────────────────────────
+    def _build_intro_section(self, parent):
         self._h1(parent, "总述", "intro-intro")
-
-        # RISC-V 介绍
         self._h2(parent, "RISC-V 介绍", "intro-intro")
-        self._p(parent,
-            "RISC-V（Reduced Instruction Set Computer V）是一种开源的指令集架构（ISA）。"
-            "它采用精简指令集计算原则，设计简洁、高效且模块化，支持多种数据宽度（如32位、64位、128位）。"
-            "RISC-V 开放性和灵活性使其广泛应用于学术研究、工业和嵌入式系统等领域，"
-            "并且能够满足从微控制器到超级计算机的各种需求。")
-        self._p(parent,
-            "RISC-V 由加州大学伯克利分校的研究团队于2010年首次发布，基于精简指令集计算（RISC）原则。"
-            "作为一个开源标准，RISC-V 允许任何个人或组织自由使用、修改和扩展，无需支付专利费用。"
-            "其设计目标是提供一个简单、可扩展且灵活的指令集。")
+        self._p(parent, "RISC-V（Reduced Instruction Set Computer V）是一种开源的指令集架构（ISA）。它采用精简指令集计算原则，设计简洁、高效且模块化，支持多种数据宽度。RISC-V 由加州大学伯克利分校于2010年发布，基于 RISC 原则。作为开源标准，RISC-V 允许任何个人或组织自由使用、修改和扩展。")
         self._ref(parent, "更多信息参考官网和诸多百科网站。")
-
-        # 寄存器一览表
         self._h2(parent, "寄存器意义编码一览表", "intro-regs")
-        self._p(parent,
-            "RISC-V32i 的寄存器编码占据5位，从编码顺序上来看，可以命名为 x0 到 x31，"
-            "从功能上命名各有不同，一般直接使用后者，对应前者编码。")
+        self._p(parent, "RISC-V32i 寄存器编码占5位，可命名为 x0~x31。")
         self._build_register_table(parent)
-
-        # 汇编与机器码总览表
         self._h2(parent, "汇编指令对照机器码总览表", "intro-overview")
-        self._p(parent,
-            "RV32I 是32位基础整数指令集，它支持32位寻址空间，支持字节地址访问，"
-            "仅支持小端格式（little-endian），寄存器也是32位整数寄存器。"
-            "RV32I 指令集的目的是尽量简化硬件的实施设计，所以它只有40条指令。")
-        self._p(parent,
-            "这40条指令几乎能够模拟其它任何扩展指令。实际上要实现机器模式的 RISC-V 特权架构，"
-            "还需要6条 csr 指令，它们被放在扩展指令集 Zicsr 中。"
-            "所以说要实现一个完整的 RISC-V 系统，至少要实现 RV32I+Zicsr 指令集。")
-        self._ref(parent, "参考文章：RISC-V RV32I Base Instruction Set")
+        self._p(parent, "RV32I 是32位基础整数指令集，支持32位寻址空间，小端格式。仅有40条指令，几乎能模拟所有扩展指令。")
+        self._ref(parent, "参考文章：RISC-V RV32I Base Instruction Set（https://www.cnblogs.com/jerx2y/p/RISCV-RV32I.html）")
+        for n in ("allcodes.png","typesdivision.png","picoftype.png"):
+            self._image(parent, n)
+        self._p(parent, "图像来自参考文章: 从零开始写 riscv 处理器（一）指令集（https://blog.csdn.net/mingtiauigena/article/details/150269814）")
+        self._build_format_tables_treeview(parent)
 
-        # 三张图片
-        for img_name in ("allcodes.png", "typesdivision.png", "picoftype.png"):
-            self._image(parent, img_name)
+    def _build_format_section(self, parent, fmt_key: str):
+        nm = {"R":"R-type","I":"I-type","S":"S-type","B":"B-type","U":"U-type","J":"J-type"}
+        self._h1(parent, f"{nm.get(fmt_key, fmt_key)} 指令")
+        for inst in _INSTRUCTION_LIST:
+            if inst["fmt"] == fmt_key:
+                self._build_inst_card(parent, inst)
 
-        self._p(parent, "图像来自参考文章: 从零开始写 riscv 处理器（一）指令集")
-        self._ref(parent, "在 RV32I 体系内一般在特权指令之外，机器码划分为 R-type, I-type, S-type, B-type, U-type, J-type 六种基本格式。")
+    def _build_csr_section(self, parent):
+        self._h1(parent, "特权指令（Zicsr 扩展）")
+        for inst in _CSR_INSTRUCTION_LIST:
+            self._build_inst_card(parent, inst)
 
-        # 六类编码格式总览表
-        self._build_format_tables(parent)
+    def _build_pseudo_section(self, parent):
+        self._h1(parent, "常用伪指令")
+        for inst in _PSEUDO_INSTRUCTION_LIST:
+            self._build_inst_card(parent, inst)
 
-    # ── 寄存器表格 ─────────────────────────────────────────
+    # ── 排版 ──────────────────────────────────────────────
+    def _h1(self, parent, text, tag=None):
+        lbl = ttk.Label(parent, text=text, font=("",19,"bold"))
+        lbl.grid(sticky="w", pady=(20,5))
+        if tag: self._content_widgets[tag] = lbl
+
+    def _h2(self, parent, text, tag=None):
+        lbl = ttk.Label(parent, text=text, font=("",17,"bold"))
+        lbl.grid(sticky="w", pady=(12,3))
+        if tag: self._content_widgets[tag] = lbl
+
+    def _h3(self, parent, text, tag=None):
+        lbl = ttk.Label(parent, text=text, font=("",16,"bold"))
+        lbl.grid(sticky="w", pady=(10,2))
+        if tag: self._content_widgets[tag] = lbl
+
+    def _p(self, parent, text):
+        ttk.Label(parent, text=text, justify="left", anchor="w", wraplength=700, font=("",13)).grid(sticky="w", pady=2)
+
+    def _code(self, parent, text):
+        ttk.Label(parent, text=text, font=("Consolas",13), justify="left", anchor="w").grid(sticky="w", pady=1)
+
+    def _ref(self, parent, text):
+        ttk.Label(parent, text=text, foreground="#888888", font=("",11)).grid(sticky="w", pady=(0,4))
+
+    def _image(self, parent, name):
+        img = _load_gif(name)
+        if img:
+            self._images.append(img)
+            ttk.Label(parent, image=img).grid(sticky="w", pady=5)
+        else:
+            ttk.Label(parent, text=f"[图片：{name}]", foreground="#999", background="#f0f0f0", font=("",11), padding=40).grid(sticky="ew", pady=5)
+
     def _build_register_table(self, parent):
         frame = ttk.LabelFrame(parent, text="寄存器编码表", padding=5)
         frame.grid(sticky="ew", pady=5)
-        cols = ("编号", "二进制", "ABI名称", "作用", "调用约定")
-        tree = ttk.Treeview(frame, columns=cols, show="headings",
-                            height=15, displaycolumns=cols)
-        for c in cols:
-            tree.heading(c, text=c)
-            tree.column(c, width=80)
-        tree.column("编号", width=50)
-        tree.column("二进制", width=70)
-        tree.column("ABI名称", width=80)
-        tree.column("作用", width=200)
-        tree.column("调用约定", width=70)
-        for row in _REGISTER_TABLE:
-            tree.insert("", "end", values=row)
-        tree.grid(sticky="ew")
-        # 添加 pc 行
-        ttk.Label(frame, text="pc — 程序计数器，不可直接读写",
-                  font=("", 9), foreground="#666").grid(sticky="w", pady=(2, 0))
-        self._content_widgets["intro-regs"] = tree
+        cols = ("编号","二进制","ABI名称","作用","调用约定")
+        t = ttk.Treeview(frame, columns=cols, show="headings", height=len(_REGISTER_TABLE))
+        for c in cols: t.heading(c, text=c)
+        t.column("编号",width=60); t.column("二进制",width=80); t.column("ABI名称",width=85); t.column("作用",width=320); t.column("调用约定",width=85)
+        for r in _REGISTER_TABLE: t.insert("","end",values=r)
+        t.grid(sticky="ew")
+        self._content_widgets["intro-regs"] = t
 
-    # ── 六类编码格式总览表 ────────────────────────────────
-    def _build_format_tables(self, parent):
-        format_info = {
-            "R": ("R型", ["31-25","24-20","19-15","14-12","11-7","6-0","功能"]),
-            "I": ("I型", ["31-20","19-15","14-12","11-7","6-0","功能"]),
-            "S": ("S型", ["31-25","24-20","19-15","14-12","11-7","6-0","功能"]),
-            "B": ("B型", ["31-25","24-20","19-15","14-12","11-7","6-0","功能"]),
-            "U": ("U型", ["31-12","11-7","6-0","功能"]),
-            "J": ("J型", ["31-12","11-7","6-0","功能"]),
-        }
-        for fmt_key, (title, cols) in format_info.items():
-            data = _FORMAT_TABLES[fmt_key]
-            if not data:
-                continue
-            frame = ttk.LabelFrame(parent, text=f"{title} 编码表格", padding=5)
-            frame.grid(sticky="ew", pady=5)
-            # 表头行
-            hdr = ttk.Frame(frame)
-            hdr.pack(fill="x")
+    def _build_format_tables_treeview(self, parent):
+        cfg = {"R":("R型",["指令","funct7","rs2","rs1","funct3","rd","opcode","功能"]),
+               "I":("I型",["指令","imm[11:0]","rs1","funct3","rd","opcode","功能"]),
+               "S":("S型",["指令","imm[11:5]","rs2","rs1","funct3","imm[4:0]","opcode","功能"]),
+               "B":("B型",["指令","imm[12|10:5]","rs2","rs1","funct3","imm[4:1|11]","opcode","功能"]),
+               "U":("U型",["指令","imm[31:12]","rd","opcode","功能"]),
+               "J":("J型",["指令","imm[20|10:1|11|19:12]","rd","opcode","功能"])}
+        for fk,(title,cols) in cfg.items():
+            data = _FORMAT_TABLES.get(fk)
+            if not data: continue
+            f = ttk.LabelFrame(parent, text=f"{title} 编码总览", padding=5)
+            f.grid(sticky="ew", pady=5)
+            t = ttk.Treeview(f, columns=cols, show="headings", height=len(data))
             for c in cols:
-                ttk.Label(hdr, text=c, font=("", 9, "bold"),
-                          borderwidth=1, relief="solid", padding=2).pack(side="left", fill="x", expand=True)
-            for row in data:
-                r = ttk.Frame(frame)
-                r.pack(fill="x")
-                for val in row:
-                    ttk.Label(r, text=str(val), font=("Consolas", 9),
-                              borderwidth=1, relief="solid", padding=2).pack(side="left", fill="x", expand=True)
+                t.heading(c, text=c)
+                t.column(c, width=200 if c == "功能" else 110)
+            for r in data: t.insert("","end",values=r)
+            t.grid(sticky="ew")
 
-    # ── 指令卡片 ─────────────────────────────────────────────
+    # ── 指令卡片（测试块始终可见） ────────────────────────
     def _build_inst_card(self, parent, inst):
         tag = f"inst-{inst['name'].lower()}"
-
-        # 三级标题
         self._h3(parent, f"{inst['name']} – {inst['desc_short']}", tag)
-
-        # 类型 + 作用
-        self._p(parent, f"类型：{inst['fmt_type']}  作用：{inst.get('desc','')}")
-
-        # 示例 (等宽)
+        self._p(parent, f"类型：{inst['fmt_type']}")
         self._code(parent, f"示例：{inst['example']}")
-
-        # 机器码
         self._p(parent, "机器码格式：")
         for line in inst["machine_table"]:
             self._code(parent, f"  {line}")
-
-        # 说明
         self._p(parent, inst["explanation"])
 
-        # 测试块
-        self._build_test_block(parent, inst["name"], inst["example"])
+        # 测试块：始终可见
+        ex = inst["example"]
+        asm_val = ex if ex.startswith(inst["name"].lower()) else \
+                  f"{inst['name'].lower()} {ex.split(' ',1)[-1]}" if " " in ex else \
+                  f"{inst['name'].lower()} {ex}"
 
-    # ══════════════════════════════════════════════════════════
-    #  排版辅助
-    # ══════════════════════════════════════════════════════════
-    def _h1(self, parent, text, tag=None):
-        """一级标题：15pt bold"""
-        lbl = ttk.Label(parent, text=text, font=("", 15, "bold"))
-        lbl.grid(sticky="w", pady=(20, 5))
-        if tag:
-            self._content_widgets[tag] = lbl
+        f = ttk.LabelFrame(parent, text="试试看", padding=5)
+        f.grid(sticky="ew", pady=(5,10))
+        f.columnconfigure(1, weight=1)
 
-    def _h2(self, parent, text, tag=None):
-        """二级标题：13pt bold"""
-        lbl = ttk.Label(parent, text=text, font=("", 13, "bold"))
-        lbl.grid(sticky="w", pady=(12, 3))
-        if tag:
-            self._content_widgets[tag] = lbl
+        av = tk.StringVar(value=asm_val)
+        hv = tk.StringVar()
+        bv = tk.StringVar()
+        st = ttk.Label(f, text="", foreground="#666")
 
-    def _h3(self, parent, text, tag=None):
-        """三级标题：12pt bold"""
-        lbl = ttk.Label(parent, text=text, font=("", 12, "bold"))
-        lbl.grid(sticky="w", pady=(10, 2))
-        if tag:
-            self._content_widgets[tag] = lbl
+        ttk.Label(f, text="汇编:",    font=("Consolas",12)).grid(row=0,column=0,sticky="w")
+        ttk.Entry(f, textvariable=av, font=("Consolas",12)).grid(row=0,column=1,sticky="ew",padx=(0,4))
+        ttk.Button(f, text="转换→",  width=8,
+                   command=lambda: self._t_asm(av,hv,bv,st)).grid(row=0,column=2)
 
-    def _p(self, parent, text):
-        """正文：11pt"""
-        lbl = ttk.Label(parent, text=text, justify="left",
-                        anchor="w", wraplength=700)
-        lbl.grid(sticky="w", pady=2)
-        return lbl
+        ttk.Label(f, text="十六进制:", font=("Consolas",12)).grid(row=1,column=0,sticky="w",pady=(3,0))
+        ttk.Entry(f, textvariable=hv, font=("Consolas",12)).grid(row=1,column=1,sticky="ew",padx=(0,4),pady=(3,0))
+        ttk.Button(f, text="转换→",  width=8,
+                   command=lambda: self._t_hex(hv,av,bv,st)).grid(row=1,column=2,pady=(3,0))
 
-    def _code(self, parent, text):
-        """等宽代码行：10pt"""
-        lbl = ttk.Label(parent, text=text, font=("Consolas", 10),
-                        justify="left", anchor="w")
-        lbl.grid(sticky="w", pady=1)
+        ttk.Label(f, text="二进制:",  font=("Consolas",12)).grid(row=2,column=0,sticky="w",pady=(3,0))
+        ttk.Entry(f, textvariable=bv, font=("Consolas",12)).grid(row=2,column=1,sticky="ew",padx=(0,4),pady=(3,0))
+        ttk.Button(f, text="转换→",  width=8,
+                   command=lambda: self._t_bin(bv,av,hv,st)).grid(row=2,column=2,pady=(3,0))
 
-    def _ref(self, parent, text):
-        """参考文字：9pt 灰色"""
-        lbl = ttk.Label(parent, text=text, foreground="#888888",
-                        font=("", 9))
-        lbl.grid(sticky="w", pady=(0, 4))
+        st.grid(row=3,column=0,columnspan=3,sticky="w",pady=(2,0))
+        # 自动执行一次
+        self._t_asm(av,hv,bv,st)
 
-    def _image(self, parent, name):
-        """插入图片"""
+    def _t_asm(self, a,h,b,s):
+        t=a.get().strip()
+        if not t: return
+        d=assemble_line(t)
+        if d: h.set(d.hex()); b.set(" ".join(f"{x:08b}" for x in d)); s.config(text="✅ 转换成功",foreground="green")
+        else: h.set(""); b.set(""); s.config(text="❌ 转换失败",foreground="red")
+
+    def _t_hex(self,h,a,b,s):
+        t=h.get().strip()
+        if len(t)!=8: s.config(text="需要8位十六进制",foreground="red"); return
         try:
-            img = _load_image(name)
-            if img is None:
-                raise FileNotFoundError(name)
-            self._images.append(img)
-            ttk.Label(parent, image=img).grid(sticky="w", pady=5)
-        except Exception:
-            # 图片缺省占位
-            placeholder = ttk.Label(
-                parent, text=f"[图片：{name} 未加载]",
-                foreground="#999", background="#f0f0f0",
-                font=("", 9), padding=40)
-            placeholder.grid(sticky="ew", pady=5)
+            d=bytes.fromhex(t); r=disassemble_bytes(d)
+            if r: a.set(r); b.set(" ".join(f"{x:08b}" for x in d)); s.config(text="✅ 转换成功",foreground="green")
+            else: s.config(text="❌ 无效指令编码",foreground="red")
+        except Exception as e: s.config(text=str(e),foreground="red")
 
-    # ══════════════════════════════════════════════════════════
-    #  测试块
-    # ══════════════════════════════════════════════════════════
-    def _build_test_block(self, parent, inst_name, example):
-        test_frame = ttk.LabelFrame(parent, text="试试看", padding=5)
-        test_frame.grid(sticky="ew", pady=(8, 5))
-        test_frame.columnconfigure(1, weight=1)
-
-        asm_var = tk.StringVar(value=example if example.startswith(inst_name.lower())
-                               else f"{inst_name.lower()} {example.split(' ', 1)[-1]}" if " " in example
-                               else f"{inst_name.lower()} {example}")
-        hex_var = tk.StringVar()
-        bin_var = tk.StringVar()
-        status_label = ttk.Label(test_frame, text="", foreground="#666")
-
-        # 行1：汇编
-        ttk.Label(test_frame, text="汇编:", font=("Consolas", 10)).grid(
-            row=0, column=0, sticky="w")
-        asm_entry = ttk.Entry(test_frame, textvariable=asm_var, font=("Consolas", 10))
-        asm_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
-        ttk.Button(test_frame, text="转换→", width=8,
-                   command=lambda: self._test_asm(asm_var, hex_var, bin_var, status_label)
-                   ).grid(row=0, column=2)
-
-        # 行2：十六进制
-        ttk.Label(test_frame, text="十六进制:", font=("Consolas", 10)).grid(
-            row=1, column=0, sticky="w", pady=(3, 0))
-        hex_entry = ttk.Entry(test_frame, textvariable=hex_var, font=("Consolas", 10))
-        hex_entry.grid(row=1, column=1, sticky="ew", padx=(0, 4), pady=(3, 0))
-        ttk.Button(test_frame, text="转换→", width=8,
-                   command=lambda: self._test_hex(hex_var, asm_var, bin_var, status_label)
-                   ).grid(row=1, column=2, pady=(3, 0))
-
-        # 行3：二进制
-        ttk.Label(test_frame, text="二进制:", font=("Consolas", 10)).grid(
-            row=2, column=0, sticky="w", pady=(3, 0))
-        bin_entry = ttk.Entry(test_frame, textvariable=bin_var, font=("Consolas", 10))
-        bin_entry.grid(row=2, column=1, sticky="ew", padx=(0, 4), pady=(3, 0))
-        ttk.Button(test_frame, text="转换→", width=8,
-                   command=lambda: self._test_bin(bin_var, asm_var, hex_var, status_label)
-                   ).grid(row=2, column=2, pady=(3, 0))
-
-        # 状态
-        status_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
-
-        # 自动执行一次汇编→机器码转换
-        self._test_asm(asm_var, hex_var, bin_var, status_label)
-
-    # ── 转换逻辑 ──────────────────────────────────────────
-    def _test_asm(self, asm_var, hex_var, bin_var, status_label):
-        text = asm_var.get().strip()
-        if not text:
-            return
-        data = assemble_line(text)
-        if data:
-            hex_var.set(data.hex())
-            bin_var.set(" ".join(f"{b:08b}" for b in data))
-            status_label.config(text="✅ 转换成功", foreground="green")
-        else:
-            hex_var.set("")
-            bin_var.set("")
-            status_label.config(text="❌ 转换失败", foreground="red")
-
-    def _test_hex(self, hex_var, asm_var, bin_var, status_label):
-        text = hex_var.get().strip()
-        if len(text) != 8:
-            status_label.config(text="需要8位十六进制字符", foreground="red")
-            return
+    def _t_bin(self,b,a,h,s):
+        t=b.get().strip().replace(" ","")
+        if len(t)!=32: s.config(text="需要32位二进制",foreground="red"); return
         try:
-            data = bytes.fromhex(text)
-            result = disassemble_bytes(data)
-            if result:
-                asm_var.set(result)
-                bin_var.set(" ".join(f"{b:08b}" for b in data))
-                status_label.config(text="✅ 转换成功", foreground="green")
-            else:
-                status_label.config(text="❌ 无效指令编码", foreground="red")
-        except Exception as e:
-            status_label.config(text=str(e), foreground="red")
+            d=bytes(int(t[i:i+8],2) for i in range(0,32,8)); r=disassemble_bytes(d)
+            if r: a.set(r); h.set(d.hex()); s.config(text="✅ 转换成功",foreground="green")
+            else: s.config(text="❌ 无效指令编码",foreground="red")
+        except Exception as e: s.config(text=str(e),foreground="red")
 
-    def _test_bin(self, bin_var, asm_var, hex_var, status_label):
-        text = bin_var.get().strip().replace(" ", "")
-        if len(text) != 32:
-            status_label.config(text="需要32位二进制(含空格)", foreground="red")
-            return
-        try:
-            data = bytes(int(text[i:i+8], 2) for i in range(0, 32, 8))
-            result = disassemble_bytes(data)
-            if result:
-                asm_var.set(result)
-                hex_var.set(data.hex())
-                status_label.config(text="✅ 转换成功", foreground="green")
-            else:
-                status_label.config(text="❌ 无效指令编码", foreground="red")
-        except Exception as e:
-            status_label.config(text=str(e), foreground="red")
-
-    # ══════════════════════════════════════════════════════════
-    #  导航跳转
-    # ══════════════════════════════════════════════════════════
+    # ── 跳转 ──────────────────────────────────────────────
     def _on_tree_select(self, event):
-        selection = self.tree.selection()
-        if not selection:
-            return
-        item = selection[0]
-        tags = self.tree.item(item, "tags")
-        if tags:
-            tag = tags[0]
-            self._last_selected = tag
+        s = self.tree.selection()
+        if not s: return
+        tags = self.tree.item(s[0], "tags")
+        if not tags: return
+        tag = tags[0]; self._last_selected = tag
+        sec = _TAG_TO_SECTION.get(tag)
+        if sec is None: return
+        if sec != self._current_section_key:
+            self._show_section(sec, tag)
+        elif tag in self._content_widgets:
             self._scroll_to_tag(tag)
 
     def _scroll_to_tag(self, tag):
-        if tag in self._content_widgets:
-            widget = self._content_widgets[tag]
-            self.canvas.update_idletasks()
-            bbox = self.canvas.bbox("all")
-            if bbox and bbox[3] > 0:
-                # 用绝对坐标计算相对于 content_frame 的位置
-                content_y = self.content_frame.winfo_rooty()
-                widget_y = widget.winfo_rooty()
-                y = widget_y - content_y
-                frac = y / bbox[3] if bbox[3] > 0 else 0
-                self.canvas.yview_moveto(max(0.0, frac - 0.05))
-            # 高亮效果：临时变蓝
-            orig_fg = widget.cget("foreground")
-            if orig_fg != "#3498db" and orig_fg != "blue":
-                widget.configure(foreground="#3498db")
-                self.after(500, lambda w=widget, fg=orig_fg: w.configure(foreground=fg))
+        w = self._content_widgets.get(tag)
+        if not w: return
+        self.canvas.update_idletasks()
+        h = self.content_frame.winfo_height()
+        if h > 0:
+            y = self._get_widget_y(w)
+            self.canvas.yview_moveto(max(0.0, min(1.0, y/h - 0.05)))
+        try:
+            o = w.cget("foreground")
+            if o not in ("#3498db","blue",""):
+                w.configure(foreground="#3498db")
+                self.after(500, lambda w=w,fg=o: w.configure(foreground=fg))
+        except tk.TclError: pass
 
-    # ══════════════════════════════════════════════════════════
-    #  状态管理
-    # ══════════════════════════════════════════════════════════
+    def _get_widget_y(self, widget):
+        y = 0; w = widget
+        while w and w is not self.content_frame:
+            y += w.winfo_y(); w = w.master
+        return y
+
+    # ── 状态 ──────────────────────────────────────────────
     def load_state(self, state_data: dict):
         last = state_data.get("last_selected_instruction", "intro-intro")
         self._last_selected = last
-        self.after(100, lambda: self._scroll_to_tag(self._last_selected))
+        sec = _TAG_TO_SECTION.get(last, "intro")
+        self.after(50, lambda: self._show_section(sec, last))
 
     def save_state(self) -> dict:
         return {"last_selected_instruction": self._last_selected}
 
     def reset(self):
         self._last_selected = "intro-intro"
+        self._current_section_key = None
