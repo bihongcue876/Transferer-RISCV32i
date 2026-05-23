@@ -160,6 +160,18 @@ _CSR_INSTRUCTION_LIST = [
      "explanation":"按 zimm 清零 CSR。"},
 ]
 
+_SYSTEM_INSTRUCTION_LIST = [
+    {"name":"ECALL","desc_short":"系统调用","fmt":"I","fmt_type":"系统指令","example":"ecall",
+     "machine_table":["imm[11:0]=0x000 | funct3=000 | opcode=1110011"],
+     "explanation":"触发环境调用异常，常用于在 M 模式下切换至 S 模式。"},
+    {"name":"EBREAK","desc_short":"断点","fmt":"I","fmt_type":"系统指令","example":"ebreak",
+     "machine_table":["imm[11:0]=0x001 | funct3=000 | opcode=1110011"],
+     "explanation":"触发断点异常，用于调试。"},
+    {"name":"FENCE","desc_short":"内存屏障","fmt":"I","fmt_type":"系统指令","example":"fence 15, 15",
+     "machine_table":["pred[3:0] succ[3:0] | funct3=000 | opcode=0001111"],
+     "explanation":"确保之前的访存操作在新访存前可见。pred/succ 以4位掩码指定 I/O/R/W。"},
+]
+
 _PSEUDO_INSTRUCTION_LIST = [
     {"name":"LI","desc_short":"加载立即数","fmt":"Pseudo","fmt_type":"伪指令","example":"li x5, 0x12345678",
      "machine_table":["展开为 lui + addi (或仅为 addi)"],
@@ -257,9 +269,10 @@ _FORMAT_TABLES = {
 }
 
 # ── 标签→区块映射 ──────────────────────────────────────────
-_TAG_TO_SECTION = {"intro-intro":"intro","intro-regs":"intro","intro-overview":"intro"}
+_TAG_TO_SECTION = {"intro":"intro","intro-intro":"intro","intro-regs":"intro","intro-overview":"intro"}
 for _i in _INSTRUCTION_LIST:       _TAG_TO_SECTION[f"inst-{_i['name'].lower()}"] = _i["fmt"]
 for _i in _CSR_INSTRUCTION_LIST:   _TAG_TO_SECTION[f"inst-{_i['name'].lower()}"] = "csr"
+for _i in _SYSTEM_INSTRUCTION_LIST:_TAG_TO_SECTION[f"inst-{_i['name'].lower()}"] = "system"
 for _i in _PSEUDO_INSTRUCTION_LIST:_TAG_TO_SECTION[f"inst-{_i['name'].lower()}"] = "pseudo"
 
 
@@ -288,7 +301,7 @@ class LearnPage(ttk.Frame):
         style.configure("Treeview.Heading", font=("", 13, "bold"))
 
         # 左侧导航
-        left = ttk.Frame(self, width=220)
+        left = ttk.Frame(self, width=360)
         left.grid(row=0, column=0, sticky="ns", padx=(5, 0), pady=5)
         left.grid_propagate(False)
         ttk.Label(left, text="指令导航", font=("", 14, "bold")).pack(anchor="w", padx=5, pady=(5,5))
@@ -312,9 +325,12 @@ class LearnPage(ttk.Frame):
         self.content_frame.bind("<Configure>", self._on_content_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
-        # 鼠标滚轮：Canvas 聚焦 + 递归绑定内容区所有子控件
+        # 鼠标滚轮：Canvas + content_frame 集中绑定
         self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
-        self._bind_mousewheel_recursive(self.content_frame)
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+        self.content_frame.bind("<MouseWheel>", self._on_mousewheel)
 
         # 初始显示总述
         self.after(50, lambda: self._show_section("intro", "intro-intro"))
@@ -328,35 +344,9 @@ class LearnPage(ttk.Frame):
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    # ── 递归滚轮绑定 ───────────────────────────────────────
-    def _bind_mousewheel_recursive(self, widget):
-        """递归遍历 widget 子树，为每个非滚轮控件绑定 MouseWheel"""
-        if isinstance(widget, (tk.Canvas, tk.Text)):
-            return
-        try:
-            # 跳过已有自身滚轮的 ttk::treeview
-            if widget.winfo_class() == "Treeview":
-                return
-        except tk.TclError:
-            pass
-        # 跳过 ttk::scrollbar
-        try:
-            if widget.winfo_class() in ("Scrollbar", "Radiobutton", "Checkbutton", "Button"):
-                return
-        except tk.TclError:
-            pass
-        widget.bind("<MouseWheel>", self._on_mousewheel)
-        widget.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
-        widget.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
-        try:
-            for child in widget.winfo_children():
-                self._bind_mousewheel_recursive(child)
-        except tk.TclError:
-            pass
-
     # ── 导航树 ────────────────────────────────────────────────
     def _build_nav_tree(self):
-        intro = self.tree.insert("", "end", text="总述", open=True)
+        intro = self.tree.insert("", "end", text="总述", open=True, tags=("intro",))
         self.tree.insert(intro, "end", text="RISC-V 介绍", tags=("intro-intro",))
         self.tree.insert(intro, "end", text="寄存器一览表", tags=("intro-regs",))
         self.tree.insert(intro, "end", text="汇编与机器码总览表", tags=("intro-overview",))
@@ -366,6 +356,9 @@ class LearnPage(ttk.Frame):
             for inst in _INSTRUCTION_LIST:
                 if inst["fmt"] == fk:
                     self.tree.insert(node, "end", text=f"{inst['name']} – {inst['desc_short']}", tags=(f"inst-{inst['name'].lower()}",))
+        sys_node = self.tree.insert("", "end", text="系统指令", open=True)
+        for inst in _SYSTEM_INSTRUCTION_LIST:
+            self.tree.insert(sys_node, "end", text=f"{inst['name']} – {inst['desc_short']}", tags=(f"inst-{inst['name'].lower()}",))
         priv = self.tree.insert("", "end", text="特权指令 (Zicsr)", open=True)
         for inst in _CSR_INSTRUCTION_LIST:
             self.tree.insert(priv, "end", text=f"{inst['name']} – {inst['desc_short']}", tags=(f"inst-{inst['name'].lower()}",))
@@ -388,13 +381,13 @@ class LearnPage(ttk.Frame):
                 self._build_format_section(new_frame, section_key)
             elif section_key == "csr":
                 self._build_csr_section(new_frame)
+            elif section_key == "system":
+                self._build_system_section(new_frame)
             elif section_key == "pseudo":
                 self._build_pseudo_section(new_frame)
 
             self._sections[section_key] = new_frame
             self._section_widgets[section_key] = self._content_widgets.copy()
-            # 新区块的所有控件绑定滚轮
-            self._bind_mousewheel_recursive(new_frame)
 
         # 2. 隐藏当前区块，显示目标区块
         if self._current_section_key and self._current_section_key in self._sections:
@@ -403,12 +396,24 @@ class LearnPage(ttk.Frame):
         self._current_section_key = section_key
         self._content_widgets = self._section_widgets[section_key]
 
+        # 2b. 为当前可见区块的所有子控件绑定滚轮事件
+        self._bind_section_mousewheel(self._sections[section_key])
+
         # 3. 滚动至顶部，若指定标签则跳转
         self.canvas.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.yview_moveto(0)
         if scroll_tag and scroll_tag in self._content_widgets:
             self.after(50, lambda: self._scroll_to_tag(scroll_tag))
+
+    def _bind_section_mousewheel(self, parent):
+        """递归绑定某个区块内所有子控件的滚轮事件（仅对可见区块调用）"""
+        try:
+            parent.bind("<MouseWheel>", self._on_mousewheel, add="+")
+            for child in parent.winfo_children():
+                self._bind_section_mousewheel(child)
+        except tk.TclError:
+            pass
 
     # ── 区块构建 ──────────────────────────────────────────
     def _build_intro_section(self, parent):
@@ -437,6 +442,11 @@ class LearnPage(ttk.Frame):
     def _build_csr_section(self, parent):
         self._h1(parent, "特权指令（Zicsr 扩展）")
         for inst in _CSR_INSTRUCTION_LIST:
+            self._build_inst_card(parent, inst)
+
+    def _build_system_section(self, parent):
+        self._h1(parent, "系统指令")
+        for inst in _SYSTEM_INSTRUCTION_LIST:
             self._build_inst_card(parent, inst)
 
     def _build_pseudo_section(self, parent):
@@ -588,6 +598,8 @@ class LearnPage(ttk.Frame):
         if sec is None: return
         if sec != self._current_section_key:
             self._show_section(sec, tag)
+        elif tag == "intro":
+            self.canvas.yview_moveto(0)
         elif tag in self._content_widgets:
             self._scroll_to_tag(tag)
 
