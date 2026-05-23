@@ -28,7 +28,7 @@ class MainWindow(tk.Tk):
     def __init__(self, cached_data: dict):
         super().__init__()
         self.title("RISC-V 机器码学习助手")
-        self.geometry("1350x800")
+        self.geometry("1350x800+150+50")
         self.minsize(800, 500)
 
         # 设置应用图标
@@ -136,6 +136,8 @@ class MainWindow(tk.Tk):
         self.bind_all("<Control-Q>", lambda e: self.on_close())
         self.bind_all("<Control-Shift-N>", lambda e: self.on_clear_all())
         self.bind_all("<Control-Shift-n>", lambda e: self.on_clear_all())
+        self.bind_all("<Control-s>", lambda e: self.auto_cache())
+        self.bind_all("<Control-S>", lambda e: self.auto_cache())
 
     def show_page(self, page_name: str):
         if self.current_page and self.current_page_name:

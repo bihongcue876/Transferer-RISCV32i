@@ -76,24 +76,8 @@ def assemble_line(line: str, current_address: int = 0) -> bytes:
 
 
 def _process_operands(name: str, operands: list[str], current_address: int) -> list[str]:
-    if name not in RV32I_INSTRUCTIONS:
-        return operands
-    
-    inst_info = RV32I_INSTRUCTIONS[name]
-    inst_type = inst_info["type"]
-    
-    if inst_type == "J" and len(operands) >= 2:
-        target = parse_address(operands[1])
-        if target is not None:
-            offset = target - current_address
-            operands = [operands[0], str(offset)]
-    
-    elif inst_type == "B" and len(operands) >= 3:
-        target = parse_address(operands[2])
-        if target is not None:
-            offset = target - current_address
-            operands = [operands[0], operands[1], str(offset)]
-    
+    # 暂时不做地址偏移计算，直接返回原操作数
+    # 后续如需支持标签跳转，可在此处扩展
     return operands
 
 

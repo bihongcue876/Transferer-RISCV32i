@@ -9,17 +9,27 @@ RV32I_INSTRUCTIONS = {
     "or": {"type": "R", "opcode": 0b0110011, "funct3": 0b110, "funct7": 0b0000000},
     "xor": {"type": "R", "opcode": 0b0110011, "funct3": 0b100, "funct7": 0b0000000},
     "sll": {"type": "R", "opcode": 0b0110011, "funct3": 0b001, "funct7": 0b0000000},
+    "slt": {"type": "R", "opcode": 0b0110011, "funct3": 0b010, "funct7": 0b0000000},
+    "sltu": {"type": "R", "opcode": 0b0110011, "funct3": 0b011, "funct7": 0b0000000},
     "srl": {"type": "R", "opcode": 0b0110011, "funct3": 0b101, "funct7": 0b0000000},
     "sra": {"type": "R", "opcode": 0b0110011, "funct3": 0b101, "funct7": 0b0100000},
     "addi": {"type": "I", "opcode": 0b0010011, "funct3": 0b000},
     "andi": {"type": "I", "opcode": 0b0010011, "funct3": 0b111},
     "ori": {"type": "I", "opcode": 0b0010011, "funct3": 0b110},
     "xori": {"type": "I", "opcode": 0b0010011, "funct3": 0b100},
+    "slti": {"type": "I", "opcode": 0b0010011, "funct3": 0b010},
+    "sltiu": {"type": "I", "opcode": 0b0010011, "funct3": 0b011},
     "slli": {"type": "I", "opcode": 0b0010011, "funct3": 0b001, "funct7": 0b0000000},
     "srli": {"type": "I", "opcode": 0b0010011, "funct3": 0b101, "funct7": 0b0000000},
     "srai": {"type": "I", "opcode": 0b0010011, "funct3": 0b101, "funct7": 0b0100000},
-    "lw": {"type": "I_LOAD", "opcode": 0b0000011, "funct3": 0b010},
-    "sw": {"type": "S", "opcode": 0b0100011, "funct3": 0b010},
+    "lb":  {"type": "I_LOAD", "opcode": 0b0000011, "funct3": 0b000},
+    "lh":  {"type": "I_LOAD", "opcode": 0b0000011, "funct3": 0b001},
+    "lw":  {"type": "I_LOAD", "opcode": 0b0000011, "funct3": 0b010},
+    "lbu": {"type": "I_LOAD", "opcode": 0b0000011, "funct3": 0b100},
+    "lhu": {"type": "I_LOAD", "opcode": 0b0000011, "funct3": 0b101},
+    "sb":  {"type": "S", "opcode": 0b0100011, "funct3": 0b000},
+    "sh":  {"type": "S", "opcode": 0b0100011, "funct3": 0b001},
+    "sw":  {"type": "S", "opcode": 0b0100011, "funct3": 0b010},
     "beq": {"type": "B", "opcode": 0b1100011, "funct3": 0b000},
     "bne": {"type": "B", "opcode": 0b1100011, "funct3": 0b001},
     "blt": {"type": "B", "opcode": 0b1100011, "funct3": 0b100},
@@ -30,6 +40,18 @@ RV32I_INSTRUCTIONS = {
     "jalr": {"type": "I_JALR", "opcode": 0b1100111, "funct3": 0b000},
     "lui": {"type": "U", "opcode": 0b0110111},
     "auipc": {"type": "U", "opcode": 0b0010111},
+    # 系统指令
+    "ecall":  {"type": "I_SYSTEM", "opcode": 0b1110011, "funct3": 0b000, "imm12": 0x000},
+    "ebreak": {"type": "I_SYSTEM", "opcode": 0b1110011, "funct3": 0b000, "imm12": 0x001},
+    # 内存屏障
+    "fence":  {"type": "I_FENCE", "opcode": 0b0001111, "funct3": 0b000},
+    # CSR 指令
+    "csrrw":  {"type": "I_CSR", "opcode": 0b1110011, "funct3": 0b001},
+    "csrrs":  {"type": "I_CSR", "opcode": 0b1110011, "funct3": 0b010},
+    "csrrc":  {"type": "I_CSR", "opcode": 0b1110011, "funct3": 0b011},
+    "csrrwi": {"type": "I_CSR", "opcode": 0b1110011, "funct3": 0b101},
+    "csrrsi": {"type": "I_CSR", "opcode": 0b1110011, "funct3": 0b110},
+    "csrrci": {"type": "I_CSR", "opcode": 0b1110011, "funct3": 0b111},
 }
 
 PSEUDO_INSTRUCTIONS = {
@@ -159,17 +181,23 @@ def encode(name: str, operands: list[str]) -> int:
 
     elif inst_type == "I_JALR":
         rd = parse_register(operands[0])
-        match = re.match(r"(-?\d+|0x[0-9a-fA-F]+|-0x[0-9a-fA-F]+)\s*\(\s*(\w+)\s*\)", operands[1])
-        if match:
-            imm_str = match.group(1)
-            rs1_str = match.group(2)
+        # 支持两种格式：
+        # 1. jalr rd, imm(rs1)    — 用户输入格式
+        # 2. jalr rd, rs, imm      — 伪指令展开格式（如 ret → jalr x0, x1, 0）
+        if len(operands) == 3:
+            rs1 = parse_register(operands[1])
+            imm = parse_immediate(operands[2], 12)
         else:
-            parts = operands[1].split("(")
-            imm_str = parts[0].strip()
-            rs1_str = parts[1].rstrip(")").strip()
-
-        rs1 = parse_register(rs1_str)
-        imm = parse_immediate(imm_str, 12)
+            match = re.match(r"(-?\d+|0x[0-9a-fA-F]+|-0x[0-9a-fA-F]+)\s*\(\s*(\w+)\s*\)", operands[1])
+            if match:
+                imm_str = match.group(1)
+                rs1_str = match.group(2)
+            else:
+                parts = operands[1].split("(")
+                imm_str = parts[0].strip()
+                rs1_str = parts[1].rstrip(")").strip()
+            rs1 = parse_register(rs1_str)
+            imm = parse_immediate(imm_str, 12)
         funct3 = inst_info["funct3"]
         return (imm << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 
@@ -237,52 +265,74 @@ def encode(name: str, operands: list[str]) -> int:
             | opcode
         )
 
+    elif inst_type == "I_SYSTEM":
+        imm12 = inst_info.get("imm12", 0)
+        return (imm12 << 20) | opcode
+
+    elif inst_type == "I_CSR":
+        rd = parse_register(operands[0])
+        csr = parse_immediate(operands[1], 12)
+        csr_funct3 = inst_info["funct3"]
+        if csr_funct3 in (0b101, 0b110, 0b111):
+            # csrrwi/csrrsi/csrrci: 使用 5 位无符号立即数 (zimm)
+            zimm = parse_immediate(operands[2], 5)
+            rs1_or_zimm = zimm & 0x1F
+        else:
+            rs1_or_zimm = parse_register(operands[2])
+        return (csr << 20) | (rs1_or_zimm << 15) | (csr_funct3 << 12) | (rd << 7) | opcode
+
+    elif inst_type == "I_FENCE":
+        pred = parse_immediate(operands[0], 4)
+        succ = parse_immediate(operands[1], 4)
+        fence_imm = ((pred & 0xF) << 4) | (succ & 0xF)
+        return (fence_imm << 20) | (inst_info["funct3"] << 12) | opcode
+
     raise ValueError(f"Unknown instruction type: {inst_type}")
 
 
 def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
     opcode = machine_code & 0x7F
-
-    name = None
-    for inst_name, inst_info in RV32I_INSTRUCTIONS.items():
-        if inst_info["opcode"] == opcode:
-            name = inst_name
-            break
-
-    if name is None:
-        return (None, [])
-
-    inst_info = RV32I_INSTRUCTIONS[name]
-    inst_type = inst_info["type"]
-
-    rd = (machine_code >> 7) & 0x1F
     funct3 = (machine_code >> 12) & 0x7
+    funct7 = (machine_code >> 25) & 0x7F
+    rd = (machine_code >> 7) & 0x1F
     rs1 = (machine_code >> 15) & 0x1F
     rs2 = (machine_code >> 20) & 0x1F
 
+    # 精确匹配指令：opcode + funct3 + (R型/移位I型需要)funct7
+    matched_name = None
+    matched_info = None
+    for inst_name, inst_info in RV32I_INSTRUCTIONS.items():
+        if inst_info["opcode"] != opcode:
+            continue
+        if inst_info.get("funct3", -1) != funct3:
+            continue
+        # R型 和 移位I型(slli/srli/srai) 需要匹配 funct7
+        inst_type = inst_info["type"]
+        if inst_type == "R" or (inst_type == "I" and "funct7" in inst_info):
+            if inst_info.get("funct7", -1) != funct7:
+                continue
+        matched_name = inst_name
+        matched_info = inst_info
+        break
+
+    if matched_name is None:
+        return (None, [])
+
+    inst_type = matched_info["type"]
     operands = []
 
     if inst_type == "R":
-        funct7 = (machine_code >> 25) & 0x7F
-        for inst_name, inst in RV32I_INSTRUCTIONS.items():
-            if inst["type"] == "R" and inst["opcode"] == opcode and inst["funct3"] == funct3:
-                if inst["funct7"] == funct7:
-                    name = inst_name
-                    break
         operands = [f"x{rd}", f"x{rs1}", f"x{rs2}"]
-
     elif inst_type in ("I", "I_JALR"):
         imm = (machine_code >> 20) & 0xFFF
         if imm & 0x800:
             imm = imm - 0x1000
         operands = [f"x{rd}", f"x{rs1}", str(imm)]
-
     elif inst_type == "I_LOAD":
         imm = (machine_code >> 20) & 0xFFF
         if imm & 0x800:
             imm = imm - 0x1000
         operands = [f"x{rd}", f"{imm}(x{rs1})"]
-
     elif inst_type == "S":
         imm_4_0 = (machine_code >> 7) & 0x1F
         imm_11_5 = (machine_code >> 25) & 0x7F
@@ -290,35 +340,54 @@ def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
         if imm & 0x800:
             imm = imm - 0x1000
         operands = [f"x{rs2}", f"{imm}(x{rs1})"]
-
     elif inst_type == "B":
         imm_12 = (machine_code >> 31) & 0x1
         imm_10_5 = (machine_code >> 25) & 0x3F
         imm_4_1 = (machine_code >> 8) & 0xF
         imm_11 = (machine_code >> 7) & 0x1
-
         imm = (imm_12 << 12) | (imm_11 << 11) | (imm_10_5 << 5) | (imm_4_1 << 1)
         if imm & 0x1000:
             imm = imm - 0x2000
         operands = [f"x{rs1}", f"x{rs2}", str(imm)]
-
     elif inst_type == "U":
         imm_31_12 = (machine_code >> 12) & 0xFFFFF
         imm = imm_31_12 << 12
         operands = [f"x{rd}", str(imm)]
-
     elif inst_type == "J":
         imm_20 = (machine_code >> 31) & 0x1
         imm_10_1 = (machine_code >> 21) & 0x3FF
         imm_11 = (machine_code >> 20) & 0x1
         imm_19_12 = (machine_code >> 12) & 0xFF
-
         imm = (imm_20 << 20) | (imm_19_12 << 12) | (imm_11 << 11) | (imm_10_1 << 1)
         if imm & 0x100000:
             imm = imm - 0x200000
         operands = [f"x{rd}", str(imm)]
 
-    return (name, operands)
+    elif inst_type == "I_SYSTEM":
+        imm_val = (machine_code >> 20) & 0xFFF
+        # 通过 imm12 区分 ecall(0x000) 和 ebreak(0x001)
+        for n, i in RV32I_INSTRUCTIONS.items():
+            if i.get("type") == "I_SYSTEM" and i.get("imm12") == imm_val:
+                matched_name = n
+                break
+        operands = []
+
+    elif inst_type == "I_CSR":
+        csr = (machine_code >> 20) & 0xFFF
+        funct3 = matched_info["funct3"]
+        if funct3 in (0b101, 0b110, 0b111):
+            zimm = rs1 & 0x1F
+            operands = [f"x{rd}", str(csr), str(zimm)]
+        else:
+            operands = [f"x{rd}", str(csr), f"x{rs1}"]
+
+    elif inst_type == "I_FENCE":
+        imm_val = (machine_code >> 20) & 0xFFF
+        pred = (imm_val >> 4) & 0xF
+        succ = imm_val & 0xF
+        operands = [str(pred), str(succ)]
+
+    return (matched_name, operands)
 
 
 def is_pseudo(name: str) -> bool:
