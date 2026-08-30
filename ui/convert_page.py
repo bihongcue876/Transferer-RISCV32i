@@ -1,12 +1,10 @@
 import tkinter as tk
 from tkinter import ttk
 from core.assembler import (
-    assemble_line,
-    format_machine_bytes,
+    assemble_program,
     format_machine_bytes_endian,
     disassemble_bytes,
     analyze_assembly_line,
-    compute_addresses,
 )
 
 
@@ -20,6 +18,9 @@ class ConvertPage(ttk.Frame):
         self._updating = False
         self._convert_after_id = None
         self._memory_entries = {}
+        self._last_results = []          # 最近一次两遍汇编结果（与汇编行一一对应）
+        self._symbol_addrs = {}          # 标签 → 地址
+        self._symbols = set()            # 标签名集合
         self._memory_config = {
             "rom_start": "00000000",
             "rom_size": "00010000",
@@ -306,11 +307,7 @@ class ConvertPage(ttk.Frame):
             self.after_cancel(self._convert_after_id)
         self._convert_after_id = self.after(100, self._do_assembly_conversion)
 
-    def _do_assembly_conversion(self):
-        if self._updating:
-            return
-        self._convert_after_id = None
-
+    def _split_asm_lines(self) -> list[str]:
         content = self.assembly_text.get("1.0", "end-1c")
         lines = content.split("\n")
         # 去掉末尾多余的单个空行，保留用户意图
@@ -318,35 +315,55 @@ class ConvertPage(ttk.Frame):
             lines.pop()
         if not lines:
             lines = [""]
+        return lines
 
+    def _do_assembly_conversion(self):
+        if self._updating:
+            return
+        self._convert_after_id = None
+
+        lines = self._split_asm_lines()
         addr_content = self.addr_text.get("1.0", "end-1c")
         addr_lines = addr_content.split("\n") if addr_content else []
-        new_addrs = compute_addresses(addr_lines, len(lines))
 
-        machine_lines = []
-        for i, line in enumerate(lines):
-            data = assemble_line(line)
-            if data:
-                machine_lines.append(format_machine_bytes_endian(data, self._display_mode, self._endian))
+        results = assemble_program(lines, addr_lines)
+        self._last_results = results
+        self._symbol_addrs = {}
+        for r in results:
+            for lab in r["labels"]:
+                self._symbol_addrs[lab] = r["address"]
+        self._symbols = set(self._symbol_addrs)
+
+        machine_rows = []
+        addr_rows = []
+        for r in results:
+            datas = [c["data"] for c in r["chunks"] if c["data"]]
+            if datas:
+                blob = b"".join(datas)
+                machine_rows.append(format_machine_bytes_endian(blob, self._display_mode, self._endian))
             else:
-                machine_lines.append("")
+                machine_rows.append("")
+            addr_rows.append(f"{r['address']:08x}")
 
         self._updating = True
         self.addr_text.delete("1.0", "end")
-        self.addr_text.insert("1.0", "\n".join(new_addrs))
+        self.addr_text.insert("1.0", "\n".join(addr_rows))
         self.machine_text.delete("1.0", "end")
-        self.machine_text.insert("1.0", "\n".join(machine_lines))
+        self.machine_text.insert("1.0", "\n".join(machine_rows))
+        self._apply_error_tags(results)
         self.after_idle(lambda: setattr(self, '_updating', False))
         self._update_overview_stats()
         self.main_window.auto_cache()
 
-    def _ensure_addr_lines(self, num_lines: int):
-        current = self.addr_text.get("1.0", "end-1c")
-        current_lines = current.split("\n") if current else []
-        if len(current_lines) < num_lines:
-            new_addrs = compute_addresses(current_lines, num_lines)
-            self.addr_text.delete("1.0", "end")
-            self.addr_text.insert("1.0", "\n".join(new_addrs))
+    def _apply_error_tags(self, results):
+        """错误行在汇编列与机器码列同时红色高亮。"""
+        self.assembly_text.tag_remove("error", "1.0", "end")
+        self.machine_text.tag_remove("error", "1.0", "end")
+        for i, r in enumerate(results):
+            if r["error"]:
+                ln = f"{i + 1}.0"
+                self.assembly_text.tag_add("error", ln, f"{i + 1}.end")
+                self.machine_text.tag_add("error", ln, f"{i + 1}.end")
 
     def _on_machine_modified(self, event=None):
         if self.machine_text.edit_modified():
@@ -376,9 +393,12 @@ class ConvertPage(ttk.Frame):
                 lines = [""]
 
             new_asm_lines = []
+            new_machine_lines = []
             new_addr_lines = []
-            has_error = False
-            for i, line_content in enumerate(lines):
+            error_rows = set()
+            index = 0
+
+            for line_content in lines:
                 stripped = line_content.strip()
                 if stripped and self._is_valid_mode_content(stripped):
                     try:
@@ -392,27 +412,51 @@ class ConvertPage(ttk.Frame):
                             )
                         if self._endian == "big":
                             data = bytes(reversed(data))
-                        result = disassemble_bytes(data)
-                        if result is not None:
-                            new_asm_lines.append(result)
-                            new_addr_lines.append(f"{i * 4:08x}")
-                        else:
-                            new_asm_lines.append("")
-                            new_addr_lines.append(f"{i * 4:08x}")
-                            has_error = True
+                        if len(data) == 0 or len(data) % 4 != 0:
+                            raise ValueError("length")
+                        # 一行可能包含多条指令（如 li 展开后的 8 字节），按 4 字节分组
+                        for k in range(0, len(data), 4):
+                            word = data[k: k + 4]
+                            text = disassemble_bytes(word)
+                            if text is None:
+                                new_asm_lines.append("")
+                                error_rows.add(index)
+                            else:
+                                new_asm_lines.append(text)
+                            new_machine_lines.append(
+                                format_machine_bytes_endian(word, self._display_mode, self._endian)
+                            )
+                            new_addr_lines.append(f"{index * 4:08x}")
+                            index += 1
                     except Exception:
                         new_asm_lines.append("")
-                        new_addr_lines.append(f"{i * 4:08x}")
-                        has_error = True
+                        new_machine_lines.append("")
+                        new_addr_lines.append(f"{index * 4:08x}")
+                        error_rows.add(index)
+                        index += 1
                 else:
+                    # 空行/无效字符行：原样保留汇编列文本，便于用户继续编辑
                     new_asm_lines.append(stripped)
-                    new_addr_lines.append(f"{i * 4:08x}")
+                    new_machine_lines.append("")
+                    new_addr_lines.append(f"{index * 4:08x}")
+                    index += 1
 
             self._updating = True
             self.assembly_text.delete("1.0", "end")
             self.assembly_text.insert("1.0", "\n".join(new_asm_lines))
             self.addr_text.delete("1.0", "end")
             self.addr_text.insert("1.0", "\n".join(new_addr_lines))
+            self.machine_text.delete("1.0", "end")
+            self.machine_text.insert("1.0", "\n".join(new_machine_lines))
+            # 高亮无法反汇编的行
+            self.assembly_text.tag_remove("error", "1.0", "end")
+            self.machine_text.tag_remove("error", "1.0", "end")
+            for i in error_rows:
+                self.assembly_text.tag_add("error", f"{i + 1}.0", f"{i + 1}.end")
+                self.machine_text.tag_add("error", f"{i + 1}.0", f"{i + 1}.end")
+            self._last_results = []
+            self._symbol_addrs = {}
+            self._symbols = set()
             self.after_idle(lambda: setattr(self, '_updating', False))
             self._update_overview_stats()
             self.main_window.auto_cache()
@@ -446,18 +490,26 @@ class ConvertPage(ttk.Frame):
                 f"{line_num}.0", f"{line_num}.end"
             ).strip()
             if line_content:
-                analysis = analyze_assembly_line(line_content)
+                analysis = analyze_assembly_line(
+                    line_content, self._symbols, self._symbol_addrs
+                )
                 if analysis["valid"]:
                     fmt = analysis["format"]
                     expanded = analysis.get("expanded_count", 1)
                     self.format_label.config(text=fmt)
-                    # 更新本行标签信息
+                    # 更新本行标签页信息
                     extra = f" (展开为 {expanded} 条指令)" if expanded > 1 else ""
-                    self.line_info_var.set(f"类型：{fmt} | 指令：{analysis['name']}{extra}")
+                    detail = analysis.get("detail", "")
+                    info = f"类型：{fmt} | 指令：{analysis['name']}{extra}"
+                    if detail:
+                        info += f" | {detail}"
+                    self.line_info_var.set(info)
+                    status = f"{fmt} | {analysis['name']}"
                     if expanded > 1:
-                        self.main_window.set_status(f"{fmt} | {analysis['name']} (展开为 {expanded} 条指令)")
-                    else:
-                        self.main_window.set_status(f"{fmt} | {analysis['name']}")
+                        status += f" (展开为 {expanded} 条指令)"
+                    if detail:
+                        status += f" | {detail}"
+                    self.main_window.set_status(status)
                 else:
                     err = analysis.get("error", "")
                     self.format_label.config(text="")
@@ -474,25 +526,16 @@ class ConvertPage(ttk.Frame):
             self.format_label.config(text="")
 
     def _update_overview_stats(self):
-        """更新总览标签中的全局统计"""
+        """更新总览标签中的全局统计（基于最近一次两遍汇编结果）。"""
         try:
-            asm_content = self.assembly_text.get("1.0", "end-1c")
-            lines = asm_content.split("\n")
-            while lines and lines[-1] == "" and len(lines) > 1:
-                lines.pop()
+            lines = self._split_asm_lines()
+            addr_content = self.addr_text.get("1.0", "end-1c")
+            addr_lines = addr_content.split("\n") if addr_content else []
+            results = assemble_program(lines, addr_lines)
 
             total_lines = len(lines)
-            error_lines = 0
-            total_bytes = 0
-
-            for line in lines:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#"):
-                    data = assemble_line(stripped)
-                    if data:
-                        total_bytes += len(data)
-                    else:
-                        error_lines += 1
+            total_bytes = sum(r["size"] for r in results)
+            error_lines = sum(1 for r in results if r["error"])
 
             if hasattr(self, "_stats_labels"):
                 self._stats_labels["lines"].config(text=str(total_lines))
@@ -508,6 +551,9 @@ class ConvertPage(ttk.Frame):
         self.machine_text.delete("1.0", "end")
         self.assembly_text.tag_remove("error", "1.0", "end")
         self.machine_text.tag_remove("error", "1.0", "end")
+        self._last_results = []
+        self._symbol_addrs = {}
+        self._symbols = set()
         self.after_idle(lambda: setattr(self, '_updating', False))
         self.format_label.config(text="")
         self._update_overview_stats()
@@ -542,32 +588,10 @@ class ConvertPage(ttk.Frame):
             self._reformat_machine_column()
 
     def _reformat_machine_column(self):
+        """显示模式/字节序切换后，从汇编列重新生成机器码列。"""
         if self._updating:
             return
-        self._updating = True
-
-        content = self.assembly_text.get("1.0", "end-1c")
-        lines = content.split("\n")
-        while lines and lines[-1] == "" and len(lines) > 1:
-            lines.pop()
-        if not lines:
-            lines = [""]
-
-        addr_content = self.addr_text.get("1.0", "end-1c")
-        addr_lines = addr_content.split("\n") if addr_content else []
-        new_addrs = compute_addresses(addr_lines, len(lines))
-        new_machine = []
-
-        for i, line in enumerate(lines):
-            data = assemble_line(line)
-            if data:
-                new_machine.append(format_machine_bytes_endian(data, self._display_mode, self._endian))
-            else:
-                new_machine.append("")
-
-        self.machine_text.delete("1.0", "end")
-        self.machine_text.insert("1.0", "\n".join(new_machine))
-        self.after_idle(lambda: setattr(self, '_updating', False))
+        self._do_assembly_conversion()
 
     def load_state(self, state_data: dict):
         self._updating = True
@@ -606,25 +630,9 @@ class ConvertPage(ttk.Frame):
         if mach_text:
             self.machine_text.insert("1.0", mach_text)
 
-        # 确保地址行数与汇编行数对齐
-        self._ensure_addr_lines_after_load()
+        # 恢复后立即做一次两遍汇编，刷新地址/机器码/错误高亮/符号表
         self.after_idle(lambda: setattr(self, '_updating', False))
-        self._update_overview_stats()
-
-    def _ensure_addr_lines_after_load(self):
-        """确保地址行数与汇编行数一致，不足时自动补齐"""
-        addr_content = self.addr_text.get("1.0", "end-1c")
-        addr_lines = addr_content.split("\n") if addr_content else []
-        asm_content = self.assembly_text.get("1.0", "end-1c")
-        asm_lines = asm_content.split("\n") if asm_content else [""]
-        # 去掉末尾多余的空行
-        while asm_lines and asm_lines[-1] == "" and len(asm_lines) > 1:
-            asm_lines.pop()
-        target_count = len(asm_lines)
-        if len(addr_lines) != target_count:
-            new_addrs = compute_addresses(addr_lines, target_count)
-            self.addr_text.delete("1.0", "end")
-            self.addr_text.insert("1.0", "\n".join(new_addrs))
+        self.after_idle(self._do_assembly_conversion)
 
     def save_state(self) -> dict:
         return {
