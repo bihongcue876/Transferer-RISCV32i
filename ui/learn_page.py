@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
-from core.assembler import assemble_line, disassemble_bytes
+from core.assembler import assemble_line, disassemble_bytes, analyze_assembly_line
 
 # ── 资源路径 ─────────────────────────────────────────────────
 _RESOURCE_DIR = Path(__file__).resolve().parent.parent / "resource"
@@ -203,6 +203,18 @@ _PSEUDO_INSTRUCTION_LIST = [
     {"name":"BNEZ","desc_short":"不等零分支","fmt":"Pseudo","fmt_type":"伪指令","example":"bnez rs, label",
      "machine_table":["bne rs, x0, label → 1100011"],
      "explanation":"展开为 bne rs, x0, label。"},
+    {"name":"BGT","desc_short":"大于分支","fmt":"Pseudo","fmt_type":"伪指令","example":"bgt rs1, rs2, label",
+     "machine_table":["blt rs2, rs1, label → 1100011"],
+     "explanation":"若 rs1 > rs2 则分支。B 型只有 blt/bge，通过交换操作数实现 > 与 <=。"},
+    {"name":"BLE","desc_short":"小于等于分支","fmt":"Pseudo","fmt_type":"伪指令","example":"ble rs1, rs2, label",
+     "machine_table":["bge rs2, rs1, label → 1100011"],
+     "explanation":"若 rs1 <= rs2 则分支，展开为 bge rs2, rs1, label。"},
+    {"name":"BGTU","desc_short":"无符号大于分支","fmt":"Pseudo","fmt_type":"伪指令","example":"bgtu rs1, rs2, label",
+     "machine_table":["bltu rs2, rs1, label → 1100011"],
+     "explanation":"无符号比较 rs1 > rs2，展开为 bltu rs2, rs1, label。"},
+    {"name":"BLEU","desc_short":"无符号小于等于分支","fmt":"Pseudo","fmt_type":"伪指令","example":"bleu rs1, rs2, label",
+     "machine_table":["bgeu rs2, rs1, label → 1100011"],
+     "explanation":"无符号比较 rs1 <= rs2，展开为 bgeu rs2, rs1, label。"},
     {"name":"NEG","desc_short":"取负","fmt":"Pseudo","fmt_type":"伪指令","example":"neg x5, x6",
      "machine_table":["sub rd, x0, rs → 0110011"],
      "explanation":"rd = -rs(二进制补码)。"},
@@ -567,7 +579,10 @@ class LearnPage(ttk.Frame):
         if not t: return
         d=assemble_line(t)
         if d: h.set(d.hex()); b.set(" ".join(f"{x:08b}" for x in d)); s.config(text="✅ 转换成功",foreground="green")
-        else: h.set(""); b.set(""); s.config(text="❌ 转换失败",foreground="red")
+        else:
+            info = analyze_assembly_line(t)
+            reason = info.get("error") or "无法转换"
+            h.set(""); b.set(""); s.config(text=f"❌ {reason}",foreground="red")
 
     def _t_hex(self,h,a,b,s):
         t=h.get().strip()
