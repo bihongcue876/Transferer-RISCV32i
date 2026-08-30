@@ -1,8 +1,8 @@
 data/
 docs/
 _cachedata/
-ui/__pycache__/
-core/__pycache__/
+__pycache__/
+*.pyc
 .venv/
 releases/
 debug.log

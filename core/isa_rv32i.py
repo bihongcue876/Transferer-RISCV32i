@@ -78,75 +78,115 @@ PSEUDO_INSTRUCTIONS = {
     "snez": "snez",
     "sltz": "sltz",
     "sgtz": "sgtz",
+    "bgt": "bgt",
+    "ble": "ble",
+    "bgtu": "bgtu",
+    "bleu": "bleu",
 }
+
+# ABI 别名 → 寄存器编号
+REG_ALIASES = {
+    "zero": 0, "ra": 1, "sp": 2, "gp": 3, "tp": 4,
+    "t0": 5, "t1": 6, "t2": 7,
+    "s0": 8, "fp": 8, "s1": 9,
+    "a0": 10, "a1": 11, "a2": 12, "a3": 13,
+    "a4": 14, "a5": 15, "a6": 16, "a7": 17,
+    "s2": 18, "s3": 19, "s4": 20, "s5": 21,
+    "s6": 22, "s7": 23, "s8": 24, "s9": 25,
+    "s10": 26, "s11": 27,
+    "t3": 28, "t4": 29, "t5": 30, "t6": 31,
+}
+
+_MEM_RE = re.compile(r"^(.+?)\s*\(\s*([A-Za-z]\w*)\s*\)$")
+_FENCE_BITS = {"i": 1, "o": 2, "r": 4, "w": 8}
+_FENCE_ORDER = (("i", 1), ("o", 2), ("r", 4), ("w", 8))
 
 
 def parse_register(reg_str: str) -> int:
-    reg_str = reg_str.strip().lower()
-    if reg_str.startswith("x"):
-        return int(reg_str[1:])
-    elif reg_str == "zero":
-        return 0
-    elif reg_str == "ra":
-        return 1
-    elif reg_str == "sp":
-        return 2
-    elif reg_str == "gp":
-        return 3
-    elif reg_str == "tp":
-        return 4
-    elif reg_str.startswith("t") and reg_str[1:].isdigit():
-        num = int(reg_str[1:])
-        if num <= 2:
-            return 5 + num
-        elif num <= 6:
-            return 25 + (num - 3)
+    t = reg_str.strip().lower()
+    if t.startswith("x") and t[1:].isdigit():
+        n = int(t[1:])
+        if 0 <= n <= 31:
+            return n
+        raise ValueError(f"无效寄存器: {reg_str} (范围 x0-x31)")
+    if t in REG_ALIASES:
+        return REG_ALIASES[t]
+    raise ValueError(f"无效寄存器: {reg_str}")
+
+
+def parse_int(imm_str: str) -> int:
+    """解析整数字面量，支持十进制 / 0x 十六进制 / 0b 二进制，可带正负号与下划线分隔。"""
+    t = str(imm_str).strip().lower().replace("_", "")
+    neg = False
+    if t.startswith("+"):
+        t = t[1:]
+    elif t.startswith("-"):
+        neg = True
+        t = t[1:]
+    try:
+        if t.startswith("0x"):
+            v = int(t, 16)
+        elif t.startswith("0b"):
+            v = int(t, 2)
         else:
-            raise ValueError(f"Invalid register: {reg_str}")
-    elif reg_str.startswith("s") and reg_str[1:].isdigit():
-        num = int(reg_str[1:])
-        if num == 0:
-            return 8
-        elif num <= 11:
-            return 8 + num
-        else:
-            raise ValueError(f"Invalid register: {reg_str}")
-    elif reg_str.startswith("a") and reg_str[1:].isdigit():
-        num = int(reg_str[1:])
-        if num <= 7:
-            return 10 + num
-        else:
-            raise ValueError(f"Invalid register: {reg_str}")
-    else:
-        raise ValueError(f"Unknown register: {reg_str}")
+            v = int(t, 10)
+    except ValueError:
+        raise ValueError(f"无效立即数: {imm_str}")
+    return -v if neg else v
 
 
 def parse_immediate(imm_str: str, bits: int = 12) -> int:
-    imm_str = imm_str.strip().lower()
-    if imm_str.startswith("0x"):
-        value = int(imm_str, 16)
-    elif imm_str.startswith("-0x"):
-        value = -int(imm_str[1:], 16)
-    else:
-        value = int(imm_str)
+    return parse_int(imm_str) & ((1 << bits) - 1)
 
-    if value < 0:
-        value = (1 << bits) + value
 
-    return value & ((1 << bits) - 1)
+def _imm_checked(imm_str: str, lo: int, hi: int, what: str) -> int:
+    v = parse_int(imm_str)
+    if not (lo <= v <= hi):
+        raise ValueError(f"立即数 {imm_str} 超出{what}范围 [{lo}, {hi}]")
+    return v
+
+
+def _parse_mem(operand: str) -> tuple[str, str]:
+    """解析 imm(rs) 形式的内存操作数，返回 (imm_str, reg_str)。"""
+    m = _MEM_RE.match(operand.strip())
+    if not m:
+        raise ValueError(f"无效的内存操作数: {operand} (应为 imm(rs) 格式)")
+    return m.group(1), m.group(2)
+
+
+def _parse_fence_bits(tok: str) -> int:
+    t = tok.strip().lower()
+    if t and all(c in "iorw" for c in t):
+        return sum(_FENCE_BITS[c] for c in t)
+    v = parse_int(tok)
+    if not (0 <= v <= 15):
+        raise ValueError(f"fence 掩码 {tok} 超出范围 [0, 15]")
+    return v
+
+
+def _fence_bits_to_str(bits: int) -> str:
+    if bits == 0:
+        return "0"
+    return "".join(c for c, b in _FENCE_ORDER if bits & b)
+
+
+def _need(operands: list, n: int, usage: str):
+    if len(operands) < n:
+        raise ValueError(f"操作数不足，用法: {usage}")
 
 
 def encode(name: str, operands: list[str]) -> int:
     name = name.lower()
 
     if name not in RV32I_INSTRUCTIONS:
-        raise ValueError(f"Unknown instruction: {name}")
+        raise ValueError(f"未知指令: {name}")
 
     inst_info = RV32I_INSTRUCTIONS[name]
     inst_type = inst_info["type"]
     opcode = inst_info["opcode"]
 
     if inst_type == "R":
+        _need(operands, 3, "add rd, rs1, rs2")
         rd = parse_register(operands[0])
         rs1 = parse_register(operands[1])
         rs2 = parse_register(operands[2])
@@ -155,76 +195,65 @@ def encode(name: str, operands: list[str]) -> int:
         return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 
     elif inst_type == "I":
+        _need(operands, 3, "addi rd, rs1, imm")
         rd = parse_register(operands[0])
         rs1 = parse_register(operands[1])
-        imm = parse_immediate(operands[2], 12)
         funct3 = inst_info["funct3"]
         if name in ("slli", "srli", "srai"):
-            funct7 = inst_info.get("funct7", 0)
-            shamt = imm & 0x1F
+            shamt = _imm_checked(operands[2], 0, 31, "移位量")
+            funct7 = inst_info["funct7"]
             return (funct7 << 25) | (shamt << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
-        return (imm << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+        imm = _imm_checked(operands[2], -2048, 2047, "I型立即数")
+        return ((imm & 0xFFF) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 
     elif inst_type == "I_LOAD":
-        match = re.match(r"(-?\d+|0x[0-9a-fA-F]+|-0x[0-9a-fA-F]+)\s*\(\s*(\w+)\s*\)", operands[1])
-        if match:
-            imm_str = match.group(1)
-            rs1_str = match.group(2)
-        else:
-            raise ValueError(f"Invalid load format: {operands[1]}")
-
+        _need(operands, 2, "lw rd, imm(rs1)")
         rd = parse_register(operands[0])
+        imm_str, rs1_str = _parse_mem(operands[1])
         rs1 = parse_register(rs1_str)
-        imm = parse_immediate(imm_str, 12)
+        imm = _imm_checked(imm_str, -2048, 2047, "访存偏移")
         funct3 = inst_info["funct3"]
-        return (imm << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+        return ((imm & 0xFFF) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 
     elif inst_type == "I_JALR":
+        _need(operands, 2, "jalr rd, imm(rs1)")
         rd = parse_register(operands[0])
         # 支持两种格式：
         # 1. jalr rd, imm(rs1)    — 用户输入格式
-        # 2. jalr rd, rs, imm      — 伪指令展开格式（如 ret → jalr x0, x1, 0）
-        if len(operands) == 3:
+        # 2. jalr rd, rs1, imm    — 伪指令展开格式（如 ret → jalr x0, x1, 0）
+        if len(operands) >= 3:
             rs1 = parse_register(operands[1])
-            imm = parse_immediate(operands[2], 12)
+            imm = _imm_checked(operands[2], -2048, 2047, "jalr偏移")
         else:
-            match = re.match(r"(-?\d+|0x[0-9a-fA-F]+|-0x[0-9a-fA-F]+)\s*\(\s*(\w+)\s*\)", operands[1])
-            if match:
-                imm_str = match.group(1)
-                rs1_str = match.group(2)
-            else:
-                parts = operands[1].split("(")
-                imm_str = parts[0].strip()
-                rs1_str = parts[1].rstrip(")").strip()
+            imm_str, rs1_str = _parse_mem(operands[1])
             rs1 = parse_register(rs1_str)
-            imm = parse_immediate(imm_str, 12)
+            imm = _imm_checked(imm_str, -2048, 2047, "jalr偏移")
         funct3 = inst_info["funct3"]
-        return (imm << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+        return ((imm & 0xFFF) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 
     elif inst_type == "S":
-        match = re.match(r"(\w+)\s*,\s*(-?\d+|0x[0-9a-fA-F]+|-0x[0-9a-fA-F]+)\s*\(\s*(\w+)\s*\)", f"{operands[0]}, {operands[1]}")
-        if match:
-            rs2_str = match.group(1)
-            imm_str = match.group(2)
-            rs1_str = match.group(3)
-        else:
-            raise ValueError(f"Invalid store format")
-
-        rs2 = parse_register(rs2_str)
+        _need(operands, 2, "sw rs2, imm(rs1)")
+        rs2 = parse_register(operands[0])
+        imm_str, rs1_str = _parse_mem(operands[1])
         rs1 = parse_register(rs1_str)
-        imm = parse_immediate(imm_str, 12)
+        imm = _imm_checked(imm_str, -2048, 2047, "访存偏移")
         funct3 = inst_info["funct3"]
 
+        imm &= 0xFFF
         imm_11_5 = (imm >> 5) & 0x7F
         imm_4_0 = imm & 0x1F
         return (imm_11_5 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (imm_4_0 << 7) | opcode
 
     elif inst_type == "B":
+        _need(operands, 3, "beq rs1, rs2, offset")
         rs1 = parse_register(operands[0])
         rs2 = parse_register(operands[1])
-        imm = parse_immediate(operands[2], 13)
+        off = _imm_checked(operands[2], -4096, 4094, "分支偏移")
+        if off & 1:
+            raise ValueError(f"分支偏移 {operands[2]} 必须是 2 的倍数")
         funct3 = inst_info["funct3"]
 
+        imm = off & 0x1FFF
         imm_12 = (imm >> 12) & 0x1
         imm_10_5 = (imm >> 5) & 0x3F
         imm_4_1 = (imm >> 1) & 0xF
@@ -242,15 +271,21 @@ def encode(name: str, operands: list[str]) -> int:
         )
 
     elif inst_type == "U":
+        _need(operands, 2, "lui rd, imm20")
         rd = parse_register(operands[0])
-        imm = parse_immediate(operands[1], 32)
-        imm_31_12 = (imm >> 12) & 0xFFFFF
+        # U 型立即数是 20 位：lui x10, 0x12345 → rd = 0x12345000
+        v = _imm_checked(operands[1], -524288, 1048575, "U型立即数(20位)")
+        imm_31_12 = v & 0xFFFFF
         return (imm_31_12 << 12) | (rd << 7) | opcode
 
     elif inst_type == "J":
+        _need(operands, 2, "jal rd, offset")
         rd = parse_register(operands[0])
-        imm = parse_immediate(operands[1], 21)
+        off = _imm_checked(operands[1], -1048576, 1048574, "跳转偏移")
+        if off & 1:
+            raise ValueError(f"跳转偏移 {operands[1]} 必须是 2 的倍数")
 
+        imm = off & 0x1FFFFF
         imm_20 = (imm >> 20) & 0x1
         imm_10_1 = (imm >> 1) & 0x3FF
         imm_11 = (imm >> 11) & 0x1
@@ -270,24 +305,29 @@ def encode(name: str, operands: list[str]) -> int:
         return (imm12 << 20) | opcode
 
     elif inst_type == "I_CSR":
+        _need(operands, 3, "csrrw rd, csr, rs1")
         rd = parse_register(operands[0])
-        csr = parse_immediate(operands[1], 12)
+        csr = _imm_checked(operands[1], 0, 4095, "CSR地址")
         csr_funct3 = inst_info["funct3"]
         if csr_funct3 in (0b101, 0b110, 0b111):
             # csrrwi/csrrsi/csrrci: 使用 5 位无符号立即数 (zimm)
-            zimm = parse_immediate(operands[2], 5)
+            zimm = _imm_checked(operands[2], 0, 31, "zimm")
             rs1_or_zimm = zimm & 0x1F
         else:
             rs1_or_zimm = parse_register(operands[2])
         return (csr << 20) | (rs1_or_zimm << 15) | (csr_funct3 << 12) | (rd << 7) | opcode
 
     elif inst_type == "I_FENCE":
-        pred = parse_immediate(operands[0], 4)
-        succ = parse_immediate(operands[1], 4)
+        if not operands or all(not o.strip() for o in operands):
+            pred = succ = 0xF  # fence 等价于 fence iorw, iorw
+        else:
+            _need(operands, 2, "fence pred, succ")
+            pred = _parse_fence_bits(operands[0])
+            succ = _parse_fence_bits(operands[1])
         fence_imm = ((pred & 0xF) << 4) | (succ & 0xF)
         return (fence_imm << 20) | (inst_info["funct3"] << 12) | opcode
 
-    raise ValueError(f"Unknown instruction type: {inst_type}")
+    raise ValueError(f"未知指令类型: {inst_type}")
 
 
 def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
@@ -298,16 +338,19 @@ def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
     rs1 = (machine_code >> 15) & 0x1F
     rs2 = (machine_code >> 20) & 0x1F
 
-    # 精确匹配指令：opcode + funct3 + (R型/移位I型需要)funct7
+    # 精确匹配指令：opcode + funct3(若有) + funct7(R型/移位I型) + imm12(SYSTEM)
     matched_name = None
     matched_info = None
     for inst_name, inst_info in RV32I_INSTRUCTIONS.items():
         if inst_info["opcode"] != opcode:
             continue
-        if inst_info.get("funct3", -1) != funct3:
+        if "funct3" in inst_info and inst_info["funct3"] != funct3:
             continue
-        # R型 和 移位I型(slli/srli/srai) 需要匹配 funct7
         inst_type = inst_info["type"]
+        if inst_type == "I_SYSTEM":
+            # ecall/ebreak 通过 imm12 区分，未知 SYSTEM 编码不应误判
+            if inst_info.get("imm12", 0) != ((machine_code >> 20) & 0xFFF):
+                continue
         if inst_type == "R" or (inst_type == "I" and "funct7" in inst_info):
             if inst_info.get("funct7", -1) != funct7:
                 continue
@@ -325,7 +368,10 @@ def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
         operands = [f"x{rd}", f"x{rs1}", f"x{rs2}"]
     elif inst_type in ("I", "I_JALR"):
         imm = (machine_code >> 20) & 0xFFF
-        if imm & 0x800:
+        if matched_info is not None and "funct7" in matched_info:
+            # 移位指令（slli/srli/srai）：输出 5 位 shamt 而非原始 imm12
+            imm = imm & 0x1F
+        elif imm & 0x800:
             imm = imm - 0x1000
         operands = [f"x{rd}", f"x{rs1}", str(imm)]
     elif inst_type == "I_LOAD":
@@ -350,9 +396,9 @@ def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
             imm = imm - 0x2000
         operands = [f"x{rs1}", f"x{rs2}", str(imm)]
     elif inst_type == "U":
+        # 反汇编输出 20 位立即数（与汇编输入约定一致），如 lui x10, 0x12345
         imm_31_12 = (machine_code >> 12) & 0xFFFFF
-        imm = imm_31_12 << 12
-        operands = [f"x{rd}", str(imm)]
+        operands = [f"x{rd}", f"0x{imm_31_12:x}"]
     elif inst_type == "J":
         imm_20 = (machine_code >> 31) & 0x1
         imm_10_1 = (machine_code >> 21) & 0x3FF
@@ -364,18 +410,12 @@ def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
         operands = [f"x{rd}", str(imm)]
 
     elif inst_type == "I_SYSTEM":
-        imm_val = (machine_code >> 20) & 0xFFF
-        # 通过 imm12 区分 ecall(0x000) 和 ebreak(0x001)
-        for n, i in RV32I_INSTRUCTIONS.items():
-            if i.get("type") == "I_SYSTEM" and i.get("imm12") == imm_val:
-                matched_name = n
-                break
         operands = []
 
     elif inst_type == "I_CSR":
         csr = (machine_code >> 20) & 0xFFF
-        funct3 = matched_info["funct3"]
-        if funct3 in (0b101, 0b110, 0b111):
+        csr_funct3 = matched_info["funct3"]
+        if csr_funct3 in (0b101, 0b110, 0b111):
             zimm = rs1 & 0x1F
             operands = [f"x{rd}", str(csr), str(zimm)]
         else:
@@ -385,7 +425,7 @@ def decode(machine_code: int) -> tuple[Optional[str], list[str]]:
         imm_val = (machine_code >> 20) & 0xFFF
         pred = (imm_val >> 4) & 0xF
         succ = imm_val & 0xF
-        operands = [str(pred), str(succ)]
+        operands = [_fence_bits_to_str(pred), _fence_bits_to_str(succ)]
 
     return (matched_name, operands)
 
@@ -429,6 +469,7 @@ def expand_pseudo(name: str, operands: list[str]) -> list[tuple[str, list[str]]]
         return [("jal", ["x0", operands[0]])]
 
     elif name == "call":
+        # 数值偏移的近距离调用；标签形式由转码页两遍汇编展开为 auipc + jalr
         return [("jal", ["x1", operands[0]])]
 
     elif name == "tail":
@@ -452,6 +493,18 @@ def expand_pseudo(name: str, operands: list[str]) -> list[tuple[str, list[str]]]
     elif name == "bgtz":
         return [("blt", ["x0", operands[0], operands[1]])]
 
+    elif name == "bgt":
+        return [("blt", [operands[1], operands[0], operands[2]])]
+
+    elif name == "ble":
+        return [("bge", [operands[1], operands[0], operands[2]])]
+
+    elif name == "bgtu":
+        return [("bltu", [operands[1], operands[0], operands[2]])]
+
+    elif name == "bleu":
+        return [("bgeu", [operands[1], operands[0], operands[2]])]
+
     elif name == "seqz":
         return [("sltiu", [operands[0], operands[1], "1"])]
 
@@ -465,43 +518,42 @@ def expand_pseudo(name: str, operands: list[str]) -> list[tuple[str, list[str]]]
         return [("slt", [operands[0], "x0", operands[1]])]
 
     elif name == "li":
-        rd = operands[0]
-        imm_str = operands[1].strip().lower()
-
-        if imm_str.startswith("0x"):
-            imm = int(imm_str, 16)
-        elif imm_str.startswith("-0x"):
-            imm = -int(imm_str[1:], 16)
-        else:
-            imm = int(imm_str)
-
-        if -2048 <= imm <= 2047:
-            return [("addi", [rd, "x0", str(imm)])]
-        elif 0 <= imm <= 0xFFFFF:
-            upper = (imm >> 12) & 0xFFFFF
-            lower = imm & 0xFFF
-            if lower == 0:
-                return [("lui", [rd, str(upper)])]
-            else:
-                result = [("lui", [rd, str(upper)])]
-                if lower & 0x800:
-                    lower = lower - 0x1000
-                result.append(("addi", [rd, rd, str(lower)]))
-                return result
-        else:
-            upper = (imm >> 12) & 0xFFFFF
-            lower = imm & 0xFFF
-            result = [("lui", [rd, str(upper)])]
-            if lower & 0x800:
-                lower = lower - 0x1000
-            result.append(("addi", [rd, rd, str(lower)]))
-            return result
+        return _expand_li(operands[0], operands[1])
 
     elif name == "la":
-        rd = operands[0]
-        return [("lui", [rd, "0"]), ("addi", [rd, rd, "0"])]
+        # 数值地址：等价于 li；标签地址由转码页两遍汇编展开为 auipc + addi
+        try:
+            parse_int(operands[1])
+        except ValueError:
+            raise ValueError(
+                f"la 需要标签支持（标签: {operands[1]}），请在转码页中使用；此处请使用数值地址"
+            )
+        return _expand_li(operands[0], operands[1])
 
     return [(name, operands)]
+
+
+def _expand_li(rd: str, imm_str: str) -> list[tuple[str, list[str]]]:
+    imm = parse_int(imm_str)
+    if -2048 <= imm <= 2047:
+        return [("addi", [rd, "x0", str(imm)])]
+
+    v = imm & 0xFFFFFFFF
+    upper = (v >> 12) & 0xFFFFF
+    lower = v & 0xFFF
+    if lower >= 0x800:
+        upper = (upper + 1) & 0xFFFFF
+        lower -= 0x1000
+
+    seq = []
+    if upper:
+        seq.append(("lui", [rd, str(upper)]))
+        base = rd
+    else:
+        base = "x0"
+    if lower or not seq:
+        seq.append(("addi", [rd, base, str(lower)]))
+    return seq
 
 
 TYPE_FRIENDLY = {
@@ -513,6 +565,9 @@ TYPE_FRIENDLY = {
     "B": "B-type",
     "U": "U-type",
     "J": "J-type",
+    "I_SYSTEM": "System",
+    "I_CSR": "CSR",
+    "I_FENCE": "Fence",
 }
 
 
