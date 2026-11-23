@@ -98,8 +98,9 @@ REG_ALIASES = {
 }
 
 _MEM_RE = re.compile(r"^(.+?)\s*\(\s*([A-Za-z]\w*)\s*\)$")
-_FENCE_BITS = {"i": 1, "o": 2, "r": 4, "w": 8}
-_FENCE_ORDER = (("i", 1), ("o", 2), ("r", 4), ("w", 8))
+# fence 的 pred/succ 是 4 位掩码，按 RISC-V 规范 I=8、O=4、R=2、W=1
+_FENCE_BITS = {"i": 8, "o": 4, "r": 2, "w": 1}
+_FENCE_ORDER = (("i", 8), ("o", 4), ("r", 2), ("w", 1))
 
 
 def parse_register(reg_str: str) -> int:

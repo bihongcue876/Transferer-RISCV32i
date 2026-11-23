@@ -115,8 +115,9 @@ export const TYPE_FRIENDLY = {
 };
 
 const MEM_RE = /^(.+?)\s*\(\s*([A-Za-z][A-Za-z0-9_]*)\s*\)$/;
-const FENCE_BITS = { i: 1, o: 2, r: 4, w: 8 };
-const FENCE_ORDER = [['i', 1], ['o', 2], ['r', 4], ['w', 8]];
+// fence 的 pred/succ 是 4 位掩码，按 RISC-V 规范 I=8、O=4、R=2、W=1
+const FENCE_BITS = { i: 8, o: 4, r: 2, w: 1 };
+const FENCE_ORDER = [['i', 8], ['o', 4], ['r', 2], ['w', 1]];
 
 /**
  * 解析寄存器名，返回 0–31。
