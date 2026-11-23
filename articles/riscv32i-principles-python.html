@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- 配色在样式表之前定下来（同步脚本，上 CSP 后也不需要放开内联脚本） -->
+<script src="/assets/js/theme-boot.js"></script>
+
+<title>BHC-Tech | RISC-V 32I 基本原理与 Python 实现方案</title>
+<meta name="description" content="以 RV32I 编解码原理为主线：六种指令格式、立即数排布、编码与译码链路、PC 相对寻址，并说明本项目与各原理的对应关系。">
+
+<!-- 文章标签：同步脚本从这里取 tag（≤16 字） -->
+<meta name="article:tag" content="RISC-V">
+
+<meta property="og:type" content="article">
+<meta property="og:title" content="RISC-V 32I 基本原理与 Python 实现方案">
+<meta property="og:description" content="以 RV32I 编解码原理为主线：指令格式、立即数排布、编码与译码链路、PC 相对寻址。">
+<meta property="og:image" content="/assets/img/og.png">
+
+<link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/css/base.css">
+<link rel="stylesheet" href="/assets/css/theme.css">
+<link rel="stylesheet" href="/assets/css/pages.css">
+</head>
+
+<body>
+<a class="skip-link" href="#main">跳到主内容</a>
+
+<!-- ---------------- 报头：站名 + 检索 / 主题 / 设置 ---------------- -->
+<header class="masthead">
+  <div class="container masthead-inner">
+    <div class="masthead-id">
+      <p class="masthead-name"><a href="/">bhc-st.site</a></p>
+      <p class="masthead-tag">技术演示站</p>
+    </div>
+
+    <div class="masthead-tools">
+      <button class="tool-btn" id="search-open" type="button"
+              aria-label="检索本站" aria-expanded="false" aria-controls="search-overlay">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.4"></circle>
+          <path d="M10.4 10.4 14 14" stroke-linecap="round"></path>
+        </svg>
+        <span class="visually-hidden">检索</span>
+      </button>
+
+      <button class="tool-btn" id="theme-cycle" type="button"
+              aria-label="切换配色" data-theme-pref-name="跟随系统">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle>
+          <path d="M8 2.4a5.6 5.6 0 0 1 0 11.2Z" fill="currentColor"></path>
+        </svg>
+        <span class="visually-hidden">切换配色</span>
+      </button>
+
+      <button class="tool-btn" id="settings-open" type="button"
+              aria-label="设置" aria-expanded="false" aria-controls="settings-overlay">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <path d="M2 4.5h12M2 11.5h12" stroke-linecap="round"></path>
+          <circle cx="5.5" cy="4.5" r="1.6" fill="none"></circle>
+          <circle cx="10.5" cy="11.5" r="1.6" fill="none"></circle>
+        </svg>
+        <span class="visually-hidden">设置</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="container">
+
+    <div class="page-head">
+      <p class="page-kicker">Article</p>
+      <h1 class="page-title">RISC-V 32I 基本原理与 Python 实现方案</h1>
+      <p class="article-meta">
+        <span>站主</span>
+        <!-- 同步脚本从这里取日期（YYYY-MM-DD），也是页面上显示的日期 -->
+        <time datetime="2026-11-23">2026 年 11 月 23 日</time>
+      </p>
+    </div>
+
+    <section class="page-section has-toc">
+<aside class="toc" aria-label="文章目录">
+        <p class="toc-title">目录</p>
+        <ol>
+          <li><a href="#sec-1">定位与边界</a></li>
+          <li><a href="#sec-2">RV32I 编解码原理</a>
+            <ol class="toc-sub">
+              <li><a href="#sec-2-1">寄存器与定长编码</a></li>
+              <li><a href="#sec-2-2">六种指令格式</a></li>
+              <li><a href="#sec-2-3">立即数的排布</a></li>
+              <li><a href="#sec-2-4">编码链路</a></li>
+              <li><a href="#sec-2-5">编码实例</a></li>
+              <li><a href="#sec-2-6">译码</a></li>
+              <li><a href="#sec-2-7">PC 相对寻址</a></li>
+            </ol>
+          </li>
+          <li><a href="#sec-3">与本项目的关系</a>
+            <ol class="toc-sub">
+              <li><a href="#sec-3-1">位域编码与表驱动</a></li>
+              <li><a href="#sec-3-2">两遍汇编</a></li>
+              <li><a href="#sec-3-3">行级错误与测试</a></li>
+            </ol>
+          </li>
+          <li><a href="#sec-4">小结</a></li>
+        </ol>
+      </aside>
+
+      <div class="prose">
+        <p class="article-note">（本文章由AI优化生成，阅读时可能存在用语不当与行文不严谨）</p>
+        <h2 class="section-title" id="sec-1">1 定位与边界</h2>
+        <p>RV32I 是 RISC-V 指令集架构的基础整数部分，由 32 个 32 位通用寄存器、定长 32 位指令编码、四十条基础指令与六条 Zicsr 特权指令组成。本文以它的编解码原理，也就是从汇编语言到机器码转换的基本原理为主线，依次介绍寄存器模型、六种指令格式、立即数排布、编码与译码链路，以及 PC 相对寻址；随后说明本项目与这些原理之间的对应关系。</p>
+        <p>本项目是一个 Python + Tkinter 桌面应用，采用纯标准库实现，专注于汇编与机器码的双向翻译；执行程序、C 压缩扩展、ELF 文件解析均在其范围之外。在这一边界内，工程上有三处值得认真对待的地方：位域编码、带标签的两遍汇编、行级错误模型。下文围绕这三条线索展开。</p>
+
+        <h2 class="section-title" id="sec-2">2 RV32I 编解码原理</h2>
+
+        <h3 id="sec-2-1">2.1 寄存器与定长编码</h3>
+        <p>整数寄存器共 32 个，记作 x0 至 x31，宽度均为 32 位；其中 x0 的读数恒为 0，写入无效，常量 0 的获取与运算结果的丢弃都借助它完成。程序计数器 PC 同为 32 位。指令编码一律 32 位定长，取指时边界天然确定，各字段的位置随格式固定，这与 x86 等变长指令集形成鲜明对比。体系还有一个特点：比较结果直接写回寄存器（slt、sltu），条件判断交给 beq、blt 等分支指令完成，硬件中省去了独立的标志寄存器。</p>
+
+        <h3 id="sec-2-2">2.2 六种指令格式</h3>
+        <p>六种指令格式共享同一组字段位置：最低 7 位恒为 opcode，rs1 恒在 19:15，funct3 恒在 14:12，rd 恒在 11:7——S 型与 B 型的写回槽位让给了立即数。公共字段位置固定，取字段与判格式得以同时进行；各格式的差异集中在编码前半段：R 型安排三个寄存器，I、S、B 型携带立即数，U、J 型携带大立即数。</p>
+
+        <figure>
+          <!-- 图 1：六种指令格式位域图 -->
+          <svg viewBox="0 0 760 312" width="100%" role="img" aria-label="RV32I 六种指令格式位域图">
+            <!-- 顶部位标尺 -->
+            <g font-size="11" fill="var(--fg-faint)" text-anchor="middle" font-family="monospace">
+              <text x="100" y="16">31</text><text x="240" y="16">25</text>
+              <text x="340" y="16">20</text><text x="440" y="16">15</text>
+              <text x="500" y="16">12</text><text x="600" y="16">7</text>
+              <text x="740" y="16">0</text>
+            </g>
+            <g stroke="var(--fg-faint)" stroke-width="1">
+              <line x1="100" y1="22" x2="100" y2="28"/><line x1="240" y1="22" x2="240" y2="28"/>
+              <line x1="340" y1="22" x2="340" y2="28"/><line x1="440" y1="22" x2="440" y2="28"/>
+              <line x1="500" y1="22" x2="500" y2="28"/><line x1="600" y1="22" x2="600" y2="28"/>
+              <line x1="740" y1="22" x2="740" y2="28"/>
+            </g>
+
+            <!-- R 型 -->
+            <text x="94" y="58" font-size="13" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">R</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="36" width="140" height="36" fill="var(--bg-alt)"/>
+              <rect x="240" y="36" width="100" height="36" fill="none"/>
+              <rect x="340" y="36" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="440" y="36" width="60" height="36" fill="none"/>
+              <rect x="500" y="36" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="600" y="36" width="140" height="36" fill="none"/>
+            </g>
+            <g font-size="11" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="170" y="51">funct7</text><text x="290" y="51">rs2</text>
+              <text x="390" y="51">rs1</text><text x="470" y="51">funct3</text>
+              <text x="550" y="51">rd</text><text x="670" y="51">opcode</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="170" y="65">[31:25]</text><text x="290" y="65">[24:20]</text>
+              <text x="390" y="65">[19:15]</text><text x="470" y="65">[14:12]</text>
+              <text x="550" y="65">[11:7]</text><text x="670" y="65">[6:0]</text>
+            </g>
+
+            <!-- I 型 -->
+            <text x="94" y="104" font-size="13" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">I</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="82" width="240" height="36" fill="var(--bg-alt)"/>
+              <rect x="340" y="82" width="100" height="36" fill="none"/>
+              <rect x="440" y="82" width="60" height="36" fill="var(--bg-alt)"/>
+              <rect x="500" y="82" width="100" height="36" fill="none"/>
+              <rect x="600" y="82" width="140" height="36" fill="var(--bg-alt)"/>
+            </g>
+            <g font-size="11" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="220" y="97">imm[31:20]</text><text x="390" y="97">rs1</text>
+              <text x="470" y="97">funct3</text><text x="550" y="97">rd</text>
+              <text x="670" y="97">opcode</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="220" y="111">[31:20]</text><text x="390" y="111">[19:15]</text>
+              <text x="470" y="111">[14:12]</text><text x="550" y="111">[11:7]</text>
+              <text x="670" y="111">[6:0]</text>
+            </g>
+
+            <!-- S 型 -->
+            <text x="94" y="150" font-size="13" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">S</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="128" width="140" height="36" fill="var(--bg-alt)"/>
+              <rect x="240" y="128" width="100" height="36" fill="none"/>
+              <rect x="340" y="128" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="440" y="128" width="60" height="36" fill="none"/>
+              <rect x="500" y="128" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="600" y="128" width="140" height="36" fill="none"/>
+            </g>
+            <g font-size="11" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="170" y="143">imm[11:5]</text><text x="290" y="143">rs2</text>
+              <text x="390" y="143">rs1</text><text x="470" y="143">funct3</text>
+              <text x="550" y="143">imm[4:0]</text><text x="670" y="143">opcode</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="170" y="157">[31:25]</text><text x="290" y="157">[24:20]</text>
+              <text x="390" y="157">[19:15]</text><text x="470" y="157">[14:12]</text>
+              <text x="550" y="157">[11:7]</text><text x="670" y="157">[6:0]</text>
+            </g>
+
+            <!-- B 型 -->
+            <text x="94" y="196" font-size="13" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">B</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="174" width="140" height="36" fill="var(--bg-alt)"/>
+              <rect x="240" y="174" width="100" height="36" fill="none"/>
+              <rect x="340" y="174" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="440" y="174" width="60" height="36" fill="none"/>
+              <rect x="500" y="174" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="600" y="174" width="140" height="36" fill="none"/>
+            </g>
+            <g font-size="10" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="170" y="189">imm[12|10:5]</text><text x="290" y="189">rs2</text>
+              <text x="390" y="189">rs1</text><text x="470" y="189">funct3</text>
+              <text x="550" y="189">imm[4:1|11]</text><text x="670" y="189">opcode</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="170" y="203">[31:25]</text><text x="290" y="203">[24:20]</text>
+              <text x="390" y="203">[19:15]</text><text x="470" y="203">[14:12]</text>
+              <text x="550" y="203">[11:7]</text><text x="670" y="203">[6:0]</text>
+            </g>
+
+            <!-- U 型 -->
+            <text x="94" y="242" font-size="13" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">U</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="220" width="400" height="36" fill="var(--bg-alt)"/>
+              <rect x="500" y="220" width="100" height="36" fill="none"/>
+              <rect x="600" y="220" width="140" height="36" fill="var(--bg-alt)"/>
+            </g>
+            <g font-size="11" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="300" y="235">imm[31:12]</text><text x="550" y="235">rd</text>
+              <text x="670" y="235">opcode</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="300" y="249">[31:12]</text><text x="550" y="249">[11:7]</text>
+              <text x="670" y="249">[6:0]</text>
+            </g>
+
+            <!-- J 型 -->
+            <text x="94" y="288" font-size="13" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">J</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="266" width="220" height="36" fill="var(--bg-alt)"/>
+              <rect x="320" y="266" width="20" height="36" fill="none"/>
+              <rect x="340" y="266" width="160" height="36" fill="var(--bg-alt)"/>
+              <rect x="500" y="266" width="100" height="36" fill="none"/>
+              <rect x="600" y="266" width="140" height="36" fill="var(--bg-alt)"/>
+            </g>
+            <g font-size="10" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="210" y="281">imm[20|10:1]</text>
+              <text x="420" y="281">imm[19:12]</text><text x="550" y="281">rd</text>
+              <text x="670" y="281">opcode</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="210" y="295">[31:21]</text><text x="330" y="295">[20]</text>
+              <text x="420" y="295">[19:12]</text><text x="550" y="295">[11:7]</text>
+              <text x="670" y="295">[6:0]</text>
+            </g>
+          </svg>
+          <figcaption><span class="fig-no">图 1</span> · RV32I 六种基础指令格式：位 31 在左，opcode 恒占最低 7 位。</figcaption>
+        </figure>
+
+        <figure>
+          <!-- 图 2：六格式位段图（转载） -->
+          <img src="/assets/img/articles/riscv32i/rv32i-six-formats.gif"
+               alt="RV32I 六种基础指令格式的位段图" width="700" height="167" loading="lazy" decoding="async">
+          <figcaption><span class="fig-no">图 2</span> · RV32I 六种基础格式的位段图（图片来源：Stephen Dai 公开教学图，项目 resource 目录收录）</figcaption>
+        </figure>
+
+        <figure>
+          <!-- 图 3：指令位段总表（转载） -->
+          <img src="/assets/img/articles/riscv32i/rv32i-instructions.gif"
+               alt="RV32I 基础指令位段总表" width="700" height="960" loading="lazy" decoding="async">
+          <figcaption><span class="fig-no">图 3</span> · RV32I 基础指令位段总表（图片来源同图 2）</figcaption>
+        </figure>
+
+        <p>这两张成图转载自 Stephen Dai 的公开教学图，项目学习页采用的也是同源插图（见图 9）；本站图 1 为自绘简化版，二者可对照阅读。</p>
+
+        
+
+        
+
+        
+
+        
+
+        <h3 id="sec-2-3">2.3 立即数的排布</h3>
+        <p>图 1 中 B 型立即数的位序初看杂乱，实则是面向硬件的精心安排，理由有三：</p>
+        <ul>
+          <li>符号位固定：立即数最高位恒在指令 bit31，符号扩展的位置固定，加法器进位链得以缩短；</li>
+          <li>字段对齐：rs1、rs2、funct3 在 R、I、S、B 四种格式中位置一致，一组译码线路即可服务多种格式；</li>
+          <li>低位省略：分支、跳转类（B/J）的 imm[0] 恒为 0 且无需编码，目标地址天然保持 2 字节对齐（I、S 型无此约定）。</li>
+        </ul>
+
+        
+
+        
+
+        <figure>
+          <!-- 图 2：B 型立即数拆装 -->
+          <svg viewBox="0 0 760 250" width="100%" role="img" aria-label="B 型立即数拆装图">
+            <defs>
+              <marker id="ah-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+              </marker>
+            </defs>
+
+            <text x="94" y="52" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">B</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="30" width="140" height="36" fill="var(--bg-alt)"/>
+              <rect x="240" y="30" width="100" height="36" fill="none"/>
+              <rect x="340" y="30" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="440" y="30" width="60" height="36" fill="none"/>
+              <rect x="500" y="30" width="100" height="36" fill="var(--bg-alt)"/>
+              <rect x="600" y="30" width="140" height="36" fill="none"/>
+            </g>
+            <g font-size="10" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="170" y="45">imm[12|10:5]</text><text x="290" y="45">rs2</text>
+              <text x="390" y="45">rs1</text><text x="470" y="45">funct3</text>
+              <text x="550" y="45">imm[4:1|11]</text><text x="670" y="45">opcode</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="170" y="59">[31:25]</text><text x="290" y="59">[24:20]</text>
+              <text x="390" y="59">[19:15]</text><text x="470" y="59">[14:12]</text>
+              <text x="550" y="59">[11:7]</text><text x="670" y="59">[6:0]</text>
+            </g>
+
+            <!-- 映射箭头 -->
+            <g stroke="var(--accent)" stroke-width="1.4" fill="none" marker-end="url(#ah-a)">
+              <line x1="140" y1="70" x2="112" y2="164"/>
+              <line x1="215" y1="70" x2="202" y2="164"/>
+              <line x1="540" y1="70" x2="302" y2="164"/>
+              <line x1="592" y1="70" x2="150" y2="164"/>
+            </g>
+            <g font-size="11" fill="var(--accent)" font-family="monospace" text-anchor="middle">
+              <text x="124" y="120">①</text><text x="210" y="120">②</text>
+              <text x="424" y="120">③</text><text x="270" y="142">④</text>
+            </g>
+
+            <!-- 重组后的立即数 -->
+            <text x="94" y="192" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">imm</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="170" width="40" height="36" fill="var(--bg-alt)"/>
+              <rect x="140" y="170" width="40" height="36" fill="none"/>
+              <rect x="180" y="170" width="120" height="36" fill="var(--bg-alt)"/>
+              <rect x="300" y="170" width="80" height="36" fill="none"/>
+              <rect x="380" y="170" width="20" height="36" fill="var(--bg-alt)"/>
+              <rect x="400" y="170" width="340" height="36" fill="none"/>
+            </g>
+            <g font-size="10" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="120" y="185">12</text><text x="160" y="185">11</text>
+              <text x="240" y="185">10:5</text><text x="340" y="185">4:1</text>
+              <text x="390" y="185">0</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="120" y="199">bit31</text><text x="160" y="199">bit7</text>
+              <text x="240" y="199">bit30:25</text><text x="340" y="199">bit11:8</text>
+            </g>
+            <text x="570" y="192" font-size="10" fill="var(--fg-faint)" text-anchor="middle">符号扩展：负数补 1，正数补 0</text>
+
+            <text x="100" y="236" font-size="11" fill="var(--fg-muted)">① bit31→imm12　② bit30:25→imm10:5　③ bit11:8→imm4:1　④ bit7→imm11</text>
+          </svg>
+          <figcaption><span class="fig-no">图 4</span> · B 型立即数的拆装：指令位与立即数位的对应（imm[0] 恒为 0，不占编码位）</figcaption>
+        </figure>
+
+        <h3 id="sec-2-4">2.4 一条指令的编码链路</h3>
+        <p>一条汇编语句转换为 32 位机器码，经历五个步骤：</p>
+        <ol>
+          <li>词法切分：剥去注释，摘出行首标签，将语句归一为「助记符 + 操作数」；</li>
+          <li>查表判格式：由助记符查指令表，取得格式类别与 opcode、funct3、funct7；</li>
+          <li>操作数解析：寄存器名接受 x1 与 ra 两套写法，立即数接受十进制、十六进制与负数，访存操作数采用 imm(rs1) 形式；</li>
+          <li>立即数校验与拆位：核对取值范围（I 型 ±2048、B 型 ±4096、J 型 ±1 MiB），再按格式将各段安置进对应位段；</li>
+          <li>位拼接输出：各字段左移至规定位后按位或，得到 32 位机器码，再按端序格式化为十六进制或二进制。</li>
+        </ol>
+
+        
+
+        <h3 id="sec-2-5">2.5 编码实例</h3>
+        <p>以一条典型的 I 型指令演示全过程：addi x1, x2, 100。查表得 I 型、opcode 0010011、funct3 000；x1 映射 rd=00001，x2 映射 rs1=00010，100 展开为 000001100100；按「imm‖rs1‖funct3‖rd‖opcode」的次序拼接，得到 32 位字 0x06410093。各字段的宽度与位置均由图 1 的格式表规定，汇编器的工作归结为查表与拼接。</p>
+
+        <figure>
+          <!-- 图 3：编码实例 -->
+          <svg viewBox="0 0 760 248" width="100%" role="img" aria-label="编码实例图">
+            <defs>
+              <marker id="ah-e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+              </marker>
+            </defs>
+            <text x="94" y="44" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">汇编</text>
+            <rect x="280" y="20" width="200" height="40" rx="4" fill="var(--bg-alt)" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="380" y="45" font-size="12" font-family="monospace" fill="var(--fg)" text-anchor="middle">addi x1, x2, 100</text>
+            <line x1="380" y1="64" x2="380" y2="90" stroke="var(--accent)" stroke-width="1.3" marker-end="url(#ah-e)"/>
+            <text x="94" y="122" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">字段</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="96" width="240" height="44" fill="var(--bg-alt)"/>
+              <rect x="340" y="96" width="100" height="44" fill="none"/>
+              <rect x="440" y="96" width="60" height="44" fill="var(--bg-alt)"/>
+              <rect x="500" y="96" width="100" height="44" fill="none"/>
+              <rect x="600" y="96" width="140" height="44" fill="var(--bg-alt)"/>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="220" y="112">imm[31:20]</text><text x="390" y="112">rs1[19:15]</text>
+              <text x="470" y="112">funct3</text><text x="550" y="112">rd[11:7]</text>
+              <text x="670" y="112">opcode[6:0]</text>
+            </g>
+            <g font-size="10" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="220" y="130">000001100100</text><text x="390" y="130">00010</text>
+              <text x="470" y="130">000</text><text x="550" y="130">00001</text>
+              <text x="670" y="130">0010011</text>
+            </g>
+            <line x1="380" y1="144" x2="380" y2="170" stroke="var(--accent)" stroke-width="1.3" marker-end="url(#ah-e)"/>
+            <text x="94" y="196" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">位串</text>
+            <rect x="100" y="172" width="640" height="40" fill="none" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="420" y="197" font-size="11.5" font-family="monospace" fill="var(--fg)" text-anchor="middle">0000 0110 0100 0001 0000 0000 1001 0011</text>
+            <text x="100" y="236" font-size="11" fill="var(--fg-muted)">十六进制 0x06410093；小端字节序存放为 93 00 41 06。</text>
+          </svg>
+          <figcaption><span class="fig-no">图 5</span> · 编码实例：addi x1, x2, 100 按图 1 的 I 型格式拼出 0x06410093。</figcaption>
+        </figure>
+
+        
+
+        <p>S 型指令的转换另有两处变化：负立即数与访存格式。以 sw x5, -8(sp) 为例，imm = −8 拆成 [11:5] 与 [4:0] 两段分别安置，寄存器采用别名 sp（即 x2）。</p>
+
+        
+
+        
+
+        <figure>
+          <!-- 图 4：S 型编码实例 -->
+          <svg viewBox="0 0 760 248" width="100%" role="img" aria-label="S 型编码实例图">
+            <defs>
+              <marker id="ah-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+              </marker>
+            </defs>
+            <text x="94" y="44" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">汇编</text>
+            <rect x="280" y="20" width="200" height="40" rx="4" fill="var(--bg-alt)" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="380" y="45" font-size="12" font-family="monospace" fill="var(--fg)" text-anchor="middle">sw x5, -8(sp)</text>
+            <line x1="380" y1="64" x2="380" y2="90" stroke="var(--accent)" stroke-width="1.3" marker-end="url(#ah-h)"/>
+            <text x="94" y="122" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">字段</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="96" width="140" height="44" fill="var(--bg-alt)"/>
+              <rect x="240" y="96" width="100" height="44" fill="none"/>
+              <rect x="340" y="96" width="100" height="44" fill="var(--bg-alt)"/>
+              <rect x="440" y="96" width="60" height="44" fill="none"/>
+              <rect x="500" y="96" width="100" height="44" fill="var(--bg-alt)"/>
+              <rect x="600" y="96" width="140" height="44" fill="none"/>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="170" y="112">imm[11:5]</text><text x="290" y="112">rs2[24:20]</text>
+              <text x="390" y="112">rs1[19:15]</text><text x="470" y="112">funct3</text>
+              <text x="550" y="112">imm[4:0]</text><text x="670" y="112">opcode[6:0]</text>
+            </g>
+            <g font-size="10" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="170" y="130">1111111</text><text x="290" y="130">00101</text>
+              <text x="390" y="130">00010</text><text x="470" y="130">010</text>
+              <text x="550" y="130">11000</text><text x="670" y="130">0100011</text>
+            </g>
+            <line x1="380" y1="144" x2="380" y2="170" stroke="var(--accent)" stroke-width="1.3" marker-end="url(#ah-h)"/>
+            <text x="94" y="196" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">位串</text>
+            <rect x="100" y="172" width="640" height="40" fill="none" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="420" y="197" font-size="11.5" font-family="monospace" fill="var(--fg)" text-anchor="middle">1111 1110 0101 0001 0010 1100 0010 0011</text>
+            <text x="100" y="236" font-size="11" fill="var(--fg-muted)">十六进制 0xFE512C23；小端字节序存放为 23 2C 51 FE。</text>
+          </svg>
+          <figcaption><span class="fig-no">图 6</span> · S 型实例：sw x5, -8(sp) 的立即数拆成 [11:5] 与 [4:0] 两段，拼出 0xFE512C23。</figcaption>
+        </figure>
+
+        <h3 id="sec-2-6">2.6 译码</h3>
+        <p>译码是编码的逆过程，次序却另有讲究：先由 opcode 判定指令族，再以 funct3（R 型与移位指令还需核对 funct7）在族内确定唯一指令，最后拆出 rd、rs1、imm 拼回操作数。整个过程遵循「先定型、再取值」：opcode、funct3、funct7 的组合在表中查无对应时，结果记为无法解码——对译码器而言，误判比报错更危险。S、B、J 型的立即数按图 4 的映射逆向拼回。</p>
+
+        
+
+        
+
+        <figure>
+          <!-- 图 5：译码流程 -->
+          <svg viewBox="0 0 760 260" width="100%" role="img" aria-label="译码流程图">
+            <defs>
+              <marker id="ah-f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+              </marker>
+            </defs>
+            <text x="94" y="39" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">输入</text>
+            <rect x="280" y="16" width="200" height="36" rx="4" fill="var(--bg-alt)" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="380" y="39" font-size="12" font-family="monospace" fill="var(--fg)" text-anchor="middle">0x06410093</text>
+            <line x1="380" y1="56" x2="380" y2="76" stroke="var(--fg-muted)" stroke-width="1.3" marker-end="url(#ah-f)"/>
+            <text x="94" y="104" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">判族</text>
+            <rect x="240" y="80" width="280" height="40" rx="4" fill="none" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="380" y="104" font-size="11" fill="var(--fg)" text-anchor="middle">① opcode = 0010011 → I 型算术族</text>
+            <line x1="380" y1="124" x2="380" y2="144" stroke="var(--fg-muted)" stroke-width="1.3" marker-end="url(#ah-f)"/>
+            <text x="94" y="172" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">定型</text>
+            <rect x="240" y="148" width="280" height="40" rx="4" fill="none" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="380" y="172" font-size="11" fill="var(--fg)" text-anchor="middle">② funct3 = 000 → 命中 addi</text>
+            <line x1="380" y1="192" x2="380" y2="212" stroke="var(--fg-muted)" stroke-width="1.3" marker-end="url(#ah-f)"/>
+            <text x="94" y="241" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">取值</text>
+            <rect x="240" y="216" width="280" height="40" rx="4" fill="none" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="380" y="241" font-size="11" fill="var(--fg)" text-anchor="middle">③ 拆 rd / rs1 / imm</text>
+            <line x1="526" y1="236" x2="556" y2="236" stroke="var(--accent)" stroke-width="1.4" marker-end="url(#ah-f)"/>
+            <rect x="560" y="216" width="180" height="40" rx="4" fill="var(--bg-alt)" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="650" y="241" font-size="11" font-family="monospace" fill="var(--fg)" text-anchor="middle">addi x1, x2, 100</text>
+          </svg>
+          <figcaption><span class="fig-no">图 7</span> · 译码流程：先定型（opcode/funct3），再取值（rd/rs1/imm）；查无此组合记为无法解码。S/B/J 型立即数按图 4 散位逆向拼回。</figcaption>
+        </figure>
+
+        <h3 id="sec-2-7">2.7 PC 相对寻址</h3>
+        <p>分支与跳转指令携带的是相对偏移而非绝对地址，目标地址按「pc + imm」计算，imm 以 2 字节为单位——这正是 imm[0] 无需编码的原因（见 2.3）。采用相对寻址后，代码段整体搬移时分毫未改依然成立，补丁与链接工具也省去了重算绝对地址的工作。偏移范围有限：B 型为 ±4 KiB，J 型为 ±1 MiB，更大的跨度需要 auipc 先行取高位。</p>
+
+        
+
+        
+
+        <figure>
+          <!-- 图 6：PC 相对寻址 -->
+          <svg viewBox="0 0 760 200" width="100%" role="img" aria-label="PC 相对寻址图">
+            <defs>
+              <marker id="ah-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+              </marker>
+            </defs>
+            <text x="380" y="28" font-size="12" fill="var(--fg-muted)" text-anchor="middle">分支目标 = pc + imm（imm 以 2 字节为单位）</text>
+            <rect x="140" y="76" width="150" height="44" rx="4" fill="var(--bg-alt)" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="215" y="102" font-size="12" font-family="monospace" fill="var(--fg)" text-anchor="middle">pc = 0x1000</text>
+            <line x1="300" y1="98" x2="460" y2="98" stroke="var(--accent)" stroke-width="1.4" marker-end="url(#ah-g)"/>
+            <text x="380" y="90" font-size="11" fill="var(--accent)" text-anchor="middle">imm = −8</text>
+            <rect x="470" y="76" width="170" height="44" rx="4" fill="none" stroke="var(--fg-muted)" stroke-width="1"/>
+            <text x="555" y="102" font-size="12" font-family="monospace" fill="var(--fg)" text-anchor="middle">目标 = 0x0ff8</text>
+            <text x="100" y="156" font-size="11" fill="var(--fg-faint)">示例：beq 偏移 −8，从 0x1000 跳到 0x0ff8；jal 同理。</text>
+            <text x="100" y="178" font-size="11" fill="var(--fg-faint)">范围：B 型 ±4 KiB，J 型 ±1 MiB；更远须先 auipc 取高位（见 3.2）。</text>
+          </svg>
+          <figcaption><span class="fig-no">图 8</span> · PC 相对寻址：目标 = pc + imm，与绝对地址无关，代码段整体搬移后分支依然成立。</figcaption>
+        </figure>
+
+        <h2 class="section-title" id="sec-3">3 与本项目的关系</h2>
+        <p>原理为体，工程为用。第 1 节列出的三个难点，在本项目中各自落实为一项设计：</p>
+
+        <h3 id="sec-3-1">3.1 难点一「位域编码」：表驱动</h3>
+        <p>图 1 的格式表在代码中呈现为一张字典，每条指令记录 type、opcode、funct3、funct7 四项属性；encode 依表拼位，decode 依表精确匹配（2.6）。六种格式与伪指令在代码中的落点一一对应：</p>
+        <pre><code>RV32I_INSTRUCTIONS = {
+    "add":  {"type": "R", "opcode": 0b0110011,
+             "funct3": 0b000, "funct7": 0b0000000},
+    "addi": {"type": "I", "opcode": 0b0010011, "funct3": 0b000},
+    # …共 40 条基础 + 6 条 Zicsr（CSR）
+}</code></pre>
+        <ul>
+          <li>R、I、S、B、U、J 六型分别对应 encode 中的同名分支，位拼接各成一套（2.4 第 5 步）；</li>
+          <li>访存与跳转变体：lb 至 lhu 归入 I_LOAD 分支，jalr 归入 I_JALR 分支；</li>
+          <li>ecall 与 ebreak 归入 I_SYSTEM 分支，以 imm12 区分；六条 CSR 指令归入 I_CSR，fence 归入 I_FENCE；</li>
+          <li>27 条伪指令独立成表，先展开为基础指令序列，再进入 encode。</li>
+        </ul>
+
+        <figure>
+          <!-- 图 9：指令分类对照表（转载，项目学习页同款） -->
+          <img src="/assets/img/articles/riscv32i/rv32i-instruction-categories.gif"
+               alt="指令分类与机器码对照表" width="700" height="478" loading="lazy" decoding="async">
+          <figcaption><span class="fig-no">图 9</span> · 指令分类与机器码对照表——项目学习页的展示插图（图片来源：Stephen Dai 公开教学图）</figcaption>
+        </figure>
+
+        <h3 id="sec-3-2">3.2 难点二「两遍汇编」：标签、锚点与 hi/lo</h3>
+        <p>真实程序中常见 loop: 这样的前后引用，单次扫描难以同时确定偏移与地址，因此采用经典的两次扫描：第一遍摘取标签，按伪指令展开统计每行的 4×n 字节并分配地址，人工填写的地址作为绝对锚点保留，锚点之间的空隙宁可留白；第二遍逐块编码，将标签替换为「目标 − pc」（见 2.7）。</p>
+
+        
+
+        
+
+        <figure>
+          <!-- 图 10：两遍汇编流程 -->
+          <svg viewBox="0 0 760 250" width="100%" role="img" aria-label="两遍汇编流程图">
+            <defs>
+              <marker id="ah-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--fg-muted)"/>
+              </marker>
+              <marker id="ah-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+              </marker>
+            </defs>
+
+            <text x="190" y="24" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="middle">第一遍（规划）</text>
+            <text x="570" y="24" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="middle">第二遍（编码）</text>
+
+            <g stroke="var(--fg-muted)" stroke-width="1" fill="var(--bg-alt)">
+              <rect x="40" y="36" width="300" height="44" rx="4"/>
+              <rect x="40" y="110" width="300" height="44" rx="4"/>
+              <rect x="40" y="184" width="300" height="44" rx="4"/>
+              <rect x="420" y="36" width="300" height="44" rx="4"/>
+              <rect x="420" y="110" width="300" height="44" rx="4"/>
+              <rect x="420" y="184" width="300" height="44" rx="4"/>
+            </g>
+            <g font-size="11" fill="var(--fg)" text-anchor="middle">
+              <text x="190" y="62">逐行 _plan_line()：剥注释、摘标签</text>
+              <text x="190" y="136">伪指令展开计数：la/call/tail 记 2 条</text>
+              <text x="190" y="210">建符号表：标签→行地址；size = 4×n</text>
+              <text x="570" y="62">末位标签替换为「目标 − pc」</text>
+              <text x="570" y="136">逐块 encode()，展开块地址 pc+4j</text>
+              <text x="570" y="210">输出 chunks 与行级错误 → 标红</text>
+            </g>
+
+            <g stroke="var(--fg-muted)" stroke-width="1.3" fill="none" marker-end="url(#ah-b)">
+              <line x1="190" y1="82" x2="190" y2="106"/>
+              <line x1="190" y1="156" x2="190" y2="180"/>
+              <line x1="570" y1="82" x2="570" y2="106"/>
+              <line x1="570" y1="156" x2="570" y2="180"/>
+            </g>
+            <line x1="346" y1="206" x2="414" y2="206" stroke="var(--accent)" stroke-width="1.4" marker-end="url(#ah-c)"/>
+          </svg>
+          <figcaption><span class="fig-no">图 10</span> · 两遍汇编：第一遍定地址与符号表，第二遍逐块编码并解析标签。</figcaption>
+        </figure>
+
+        <p>la、call、tail 三条伪指令的目标可达任意 32 位地址，超出单条指令立即数的表达范围，处理办法是拆分高低两段：高 20 位装入 auipc，低 12 位装入 addi 或 jalr，加 0x800 的修正将进位折入高位。</p>
+        <pre><code>hi = ((off + 0x800) &gt;&gt; 12) &amp; 0xFFFFF   # 高 20 位
+hi_signed = hi - 0x100000 if hi &amp; 0x80000 else hi
+lo = off - (hi_signed &lt;&lt; 12)           # 低 12 位 ∈ [-2048, 2047]</code></pre>
+
+        
+
+        
+
+        <figure>
+          <!-- 图 11：hi/lo 拆分 -->
+          <svg viewBox="0 0 760 220" width="100%" role="img" aria-label="hi/lo 拆分图">
+            <defs>
+              <marker id="ah-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+              </marker>
+            </defs>
+
+            <text x="94" y="54" font-size="12" font-weight="bold" fill="var(--fg-muted)" text-anchor="end">off</text>
+            <g stroke="var(--fg-muted)" stroke-width="1">
+              <rect x="100" y="30" width="400" height="40" fill="var(--bg-alt)"/>
+              <rect x="500" y="30" width="240" height="40" fill="none"/>
+            </g>
+            <g font-size="11" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="300" y="54">hi = (off + 0x800) &gt;&gt; 12</text>
+              <text x="620" y="54">lo = off − hi&lt;&lt;12</text>
+            </g>
+            <g font-size="9" font-family="monospace" fill="var(--fg-faint)" text-anchor="middle">
+              <text x="300" y="66">20 位</text><text x="620" y="66">12 位</text>
+            </g>
+
+            <g stroke="var(--accent)" stroke-width="1.3" fill="none" marker-end="url(#ah-d)">
+              <line x1="300" y1="74" x2="250" y2="106"/>
+              <line x1="620" y1="74" x2="560" y2="106"/>
+            </g>
+
+            <g stroke="var(--fg-muted)" stroke-width="1" fill="none">
+              <rect x="100" y="110" width="280" height="44" rx="4" fill="var(--bg-alt)"/>
+              <rect x="420" y="110" width="280" height="44" rx="4" fill="var(--bg-alt)"/>
+            </g>
+            <g font-size="12" font-family="monospace" fill="var(--fg)" text-anchor="middle">
+              <text x="240" y="136">auipc rd, hi&lt;&lt;12</text>
+              <text x="560" y="136">addi rd, rd, lo</text>
+            </g>
+
+            <text x="100" y="196" font-size="11" fill="var(--fg-faint)">+0x800 把进位折进高位，使 lo 落回带符号 12 位范围；auipc 与 addi 相加恰好还原 off。</text>
+          </svg>
+          <figcaption><span class="fig-no">图 11</span> · hi/lo 拆分：la/call/tail 展开为 auipc + addi/jalr。</figcaption>
+        </figure>
+
+        <h3 id="sec-3-3">3.3 难点三「行级错误」：错误模型与测试</h3>
+        <p>错误信息的粒度定为「行」：未知指令、无效寄存器、立即数越界、未知标签、重复标签均以行级错误对象返回，汇编过程照常推进；界面上对应行在汇编列与机器码列同时标红，底部给出原因。工具整体构建于 Python 标准库与 Tkinter 之上——转码的可信度系于每一个 bit，依赖越精简，核对越彻底。测试以 unittest 覆盖三类性质：手册样例的逐位核对、encode 与 decode 的往返一致（图 5 与图 7 互为逆过程）、标签与锚点的边界情形。转码页与学习页均建立在这些基础之上，后者将上述原理整理为可操作的教材。</p>
+
+        <h2 class="section-title" id="sec-4">4 小结</h2>
+        <p>RV32I 的编解码原理可以归纳为四句话：格式定字段（图 1 至图 3）、立即数会拆位（图 4、图 6）、编码与译码互为逆过程（图 5、图 7）、分支依赖相对寻址（图 8）。本项目将这四句话落实为一张表、两遍扫描与一组测试，原理与工程在此衔接。</p>
+        <p>完整代码见开源仓库，<a class="repo-link" href="https://github.com/bihongcue876/Transferer-RISCV32i" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>点击跳转仓库</a>。</p>
+
+      </div>
+      <p class="article-back"><a href="/articles.html">← 返回文章</a></p>
+    </section>
+
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <nav class="footer-nav" aria-label="页脚导航">
+      <a href="/guide.html">说明</a>
+      <a href="/about.html">关于</a>
+      <a href="https://github.com/bihongcue876/bhc-st-index" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </nav>
+    <p class="footer-line">BHC技术演示站</p>
+    <p class="footer-line">
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备2026044016号-1</a>
+    </p>
+  </div>
+</footer>
+
+<!-- 全局搜索面板：每个页面都复制这一块 -->
+<div class="search-overlay" id="search-overlay" hidden>
+  <div class="search-panel" role="dialog" aria-modal="true" aria-labelledby="search-dialog-title">
+    <h2 class="visually-hidden" id="search-dialog-title">站内搜索</h2>
+
+    <form class="search" id="search" role="search" action="/" method="get" autocomplete="off">
+      <div class="search-row">
+        <svg class="search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.5"></circle>
+          <path d="M10.5 10.5 14 14" stroke-linecap="round"></path>
+        </svg>
+        <input class="search-input" id="search-input" type="search" name="q"
+               placeholder="搜索文章、服务、页面…"
+               aria-label="检索本站" aria-controls="search-results" aria-expanded="false"
+               autocomplete="off" spellcheck="false">
+        <kbd class="search-kbd" aria-hidden="true">Esc</kbd>
+      </div>
+      <div class="search-results" id="search-results" role="listbox" aria-label="搜索结果" hidden></div>
+      <div class="search-foot" aria-hidden="true">
+        <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+        <span><kbd>Enter</kbd> 打开</span>
+        <span><kbd>Esc</kbd> 关闭</span>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============================================================
+     设置面板：外观、小组件、恢复默认（内容只存在本机）
+     小组件的开关只在首页生效，其他页面没有组件宿主
+     ============================================================ -->
+<div class="sheet-overlay" id="settings-overlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="sheet-head">
+      <h2 class="sheet-title" id="settings-title">设置</h2>
+      <button class="sheet-close" type="button" data-settings-close aria-label="关闭设置">×</button>
+    </div>
+
+    <div class="sheet-body">
+
+      <section class="sheet-group" aria-labelledby="settings-theme">
+        <h3 class="sheet-group-title" id="settings-theme">外观</h3>
+        <div class="seg" role="group" aria-label="配色">
+          <button class="seg-btn" type="button" data-theme-set="light" aria-pressed="false">浅色</button>
+          <button class="seg-btn" type="button" data-theme-set="dark" aria-pressed="false">深色</button>
+          <button class="seg-btn" type="button" data-theme-set="auto" aria-pressed="true">跟随系统</button>
+        </div>
+        <p class="sheet-note">选择只存在本机浏览器里。</p>
+      </section>
+
+      <section class="sheet-group" aria-labelledby="settings-widgets">
+        <h3 class="sheet-group-title" id="settings-widgets">小组件</h3>
+        <ul class="check-list" data-widget-options></ul>
+        <p class="sheet-note">小组件只在首页显示，内容写在本机 cookie，不会上传。</p>
+      </section>
+
+      <section class="sheet-group" aria-labelledby="settings-data">
+        <h3 class="sheet-group-title" id="settings-data">内容</h3>
+        <p class="sheet-note" data-config-info>文章与服务由服务器上的配置文件提供。</p>
+        <button class="sheet-reset" type="button" data-settings-reset>恢复默认</button>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script src="/assets/js/site.js" defer></script>
+<script src="/assets/js/theme.js" defer></script>
+<script src="/assets/js/search.js" defer></script>
+<script src="/assets/js/content.js" defer></script>
+<script src="/assets/js/settings.js" defer></script>
+</body>
+</html>
