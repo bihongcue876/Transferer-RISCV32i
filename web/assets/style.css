@@ -453,6 +453,11 @@ select {
 /* 有高亮层的编辑器：文字透明，只留光标；可见文字由下层着色层负责 */
 .editor.hl { color: transparent; caret-color: var(--accent); }
 .editor.hl::placeholder { color: var(--fg-faint); opacity: 0.75; }
+/* 选区必须半透明：不透明的选区背景会把下层高亮文字整片盖掉 */
+.editor.hl::selection {
+  background: light-dark(rgba(31, 111, 235, 0.16), rgba(88, 166, 255, 0.24));
+  color: transparent;
+}
 
 /* 语法着色 */
 .t-com { color: var(--fg-faint); font-style: italic; }

@@ -113,7 +113,8 @@ class KnownVectorTests(unittest.TestCase):
         self.assertEqual(encode("fence", []), 0x0FF0000F)
         self.assertEqual(encode("fence", ["iorw", "iorw"]), 0x0FF0000F)
         # pred=i(1), succ=i(1) → imm = 0x11
-        self.assertEqual(encode("fence", ["i", "i"]), 0x0110000F)
+        # pred=succ=i=0b1000，imm = (8<<4)|8 = 0x88
+        self.assertEqual(encode("fence", ["i", "i"]), 0x0880000F)
 
     def test_csr(self):
         self.assertEqual(encode("csrrw", ["x5", "0x300", "x6"]), 0x300312F3)

@@ -1,0 +1,5 @@
+# 网页目录统一用 LF，避免 Windows 与 WSL 之间来回转换行尾
+web/** text eol=lf
+
+# Python 源码交给 core.autocrlf 处理（Windows 上 checkout 为 CRLF）
+*.py text
