@@ -7,3 +7,5 @@ __pycache__/
 releases/
 debug.log
 build/
+web/node_modules/
+web/.shots/

@@ -1,0 +1,11 @@
+{
+  "name": "rv32i-web-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "RISC-V 32I 转码学习助手的纯前端演示页（零构建、零依赖）",
+  "scripts": {
+    "test": "node tests/parity.test.js",
+    "serve": "python -m http.server 8000"
+  }
+}

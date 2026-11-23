@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RISC-V 32I 转码学习助手 · 在线演示</title>
+<link rel="icon" type="image/png" href="./assets/img/logo.png">
+<script src="./src/theme-boot.js"></script>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <img class="brand-logo" src="./assets/img/logo.png" alt="" width="28" height="28">
+    <span class="brand-text">RISC-V 32I <em>转码学习助手</em></span>
+  </a>
+  <nav class="nav" id="nav">
+    <a href="#/" data-nav="home">首页</a>
+    <a href="#/convert" data-nav="convert">转码</a>
+    <a href="#/learn" data-nav="learn">学习</a>
+    <a href="#/help" data-nav="help">帮助</a>
+  </nav>
+  <button class="theme-btn" id="theme-btn" type="button" title="切换配色">自动</button>
+  <span class="badge" id="engine-badge" title="引擎状态">引擎就绪</span>
+</header>
+
+<main id="app" class="app"></main>
+
+<footer class="footer">
+  <span>RV32I · 46 条基础指令 · 27 条伪指令 · 两遍汇编</span>
+  <span class="footer-right" id="footer-note"></span>
+</footer>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
