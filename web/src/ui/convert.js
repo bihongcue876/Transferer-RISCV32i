@@ -108,7 +108,7 @@ export function mountConvert(root, state) {
           <div class="pane-body">
             <div class="hl-layer" id="cv-mc-hl"></div>
             <textarea class="editor" id="cv-mc" wrap="off" spellcheck="false"
-              placeholder="0x06410093"></textarea>
+              placeholder="93004106（小端字节序，不带 0x）"></textarea>
           </div>
         </div>
       </div>

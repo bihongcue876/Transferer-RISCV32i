@@ -1,5 +1,11 @@
 # 网页目录统一用 LF，避免 Windows 与 WSL 之间来回转换行尾
 web/** text eol=lf
 
+# 图片是二进制，禁止任何行尾转换（否则文件会被改坏）
+*.png binary
+*.ico binary
+*.gif binary
+*.bmp binary
+
 # Python 源码交给 core.autocrlf 处理（Windows 上 checkout 为 CRLF）
 *.py text

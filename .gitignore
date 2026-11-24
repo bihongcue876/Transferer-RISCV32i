@@ -1,4 +1,5 @@
-data/
+# 只忽略仓库根的数据目录；写成 data/ 会连 web/src/data/ 一起吃掉
+/data/
 docs/
 _cachedata/
 __pycache__/

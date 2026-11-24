@@ -128,8 +128,22 @@ function buildCard(inst, idx) {
   return card;
 }
 
+/**
+ * 每种格式的字段数不同，表头必须按格式取。
+ * 与桌面版 ui/learn_page.py 的 _build_format_tables_treeview 一致。
+ */
+const FMT_HEADERS = {
+  R: ['指令', 'funct7', 'rs2', 'rs1', 'funct3', 'rd', 'opcode', '功能'],
+  I: ['指令', 'imm[11:0]', 'rs1', 'funct3', 'rd', 'opcode', '功能'],
+  S: ['指令', 'imm[11:5]', 'rs2', 'rs1', 'funct3', 'imm[4:0]', 'opcode', '功能'],
+  B: ['指令', 'imm[12|10:5]', 'rs2', 'rs1', 'funct3', 'imm[4:1|11]', 'opcode', '功能'],
+  U: ['指令', 'imm[31:12]', 'rd', 'opcode', '功能'],
+  J: ['指令', 'imm[20|10:1|11|19:12]', 'rd', 'opcode', '功能'],
+};
+
 function buildFormatTable(fmt, rows) {
-  const head = ['指令', 'funct7', 'rs2', 'rs1', 'funct3', 'rd', 'opcode', '功能'];
+  const head = FMT_HEADERS[fmt] ?? FMT_HEADERS.R;
+  const last = head.length - 1;
   const wrap = document.createElement('div');
   wrap.className = 'table-wrap';
   wrap.innerHTML = `
@@ -138,7 +152,7 @@ function buildFormatTable(fmt, rows) {
       <tbody>${rows
         .map(
           (r) => `<tr>${r
-            .map((cell, i) => `<td class="${i === 7 ? 'fn' : 'mono'}">${escapeHtml(cell)}</td>`)
+            .map((cell, i) => `<td class="${i === last ? 'fn' : 'mono'}">${escapeHtml(cell)}</td>`)
             .join('')}</tr>`,
         )
         .join('')}</tbody>
